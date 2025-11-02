@@ -13,8 +13,8 @@ import os
 # ---------------------------------------------------------------------
 # ⚙️ Configuration
 # ---------------------------------------------------------------------
-MODEL_PATH = "saved_models/asl_landmark_classifier.tflite"
-ENCODER_PATH = "data/processed/label_encoder.pkl"
+MODEL_PATH = "src/saved_models/asl_landmark_classifier.tflite"
+ENCODER_PATH = "src/data/processed/label_encoder.pkl"
 
 # Load model and encoder
 print("🔹 Loading model and label encoder...")
@@ -73,11 +73,23 @@ def run_inference():
                 mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
                 # Extract 21 (x, y)
-                landmarks = []
-                for lm in hand_landmarks.landmark:
-                    landmarks.extend([lm.x, lm.y])
+                # Collect raw landmarks
+                landmarks = np.array([[lm.x, lm.y] for lm in hand_landmarks.landmark])
+
+                # --- Normalize ---
+                # 1. Move origin to the wrist (landmark 0)
+                landmarks -= landmarks[0]
+
+                # 2. Scale so total hand span is consistent (use max distance)
+                max_val = np.max(np.abs(landmarks))
+                if max_val > 0:
+                    landmarks /= max_val
+
+                # Flatten to [x0, y0, x1, y1, ..., x20, y20]
+                landmarks = landmarks.flatten()
 
                 label, conf = predict_sign(landmarks)
+
                 text = f"{label} ({conf*100:.1f}%)"
                 cv2.putText(frame, text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX,
                             1.0, (0, 255, 0), 2, cv2.LINE_AA)
