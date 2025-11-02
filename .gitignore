@@ -23,6 +23,7 @@ venv.bak/
 Thumbs.db
 
 # Data / Model files
+data
 data/raw/
 data/processed/
 saved_models/
