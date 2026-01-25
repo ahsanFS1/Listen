@@ -26,7 +26,6 @@ Thumbs.db
 data
 data/raw/
 data/processed/
-saved_models/
 *.h5
 *.ckpt
 *.tflite
