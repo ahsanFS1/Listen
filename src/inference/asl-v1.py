@@ -54,7 +54,7 @@ def predict_sign(landmarks):
 # ---------------------------------------------------------------------
 def update_text(pred_label, confidence, last_label, stable_count, sentence):
     THRESHOLD = 0.9  # confidence threshold
-    STABLE_REQUIRED = 8  # number of stable frames before accepting letter
+    STABLE_REQUIRED = 60  # number of stable frames before accepting letter
 
     if confidence > THRESHOLD:
         if pred_label == last_label:
