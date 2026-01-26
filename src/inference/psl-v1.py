@@ -152,6 +152,108 @@ PSL_TO_URDU = {
     "Zuey": "ظ",
 }
 
+# ---------------------------------------------------------------------
+# 📖 Urdu Word Dictionary & Phrases for Prediction
+# ---------------------------------------------------------------------
+URDU_WORD_DICT = {
+    # Common greetings
+    "Alif Seen Lam Alif Meem": "اسلام",  # Islam
+    "Seen Lam Alif Meem": "سلام",  # Salam (hello)
+    "Alif Chay Dochahay Alif": "اچھا",  # Acha (good)
+    "Sheen Kaaf Ray": "شکر",  # Shukr (thanks)
+    
+    # Common words
+    "Nuun Alif Meem": "نام",  # Naam (name)
+    "Pay Alif Nuun Zaey": "پانی",  # Paani (water)
+    "Kaf Tay Alif Bay": "کتاب",  # Kitaab (book)
+    "Gaaf Ray Meem": "گرم",  # Garm (hot)
+    "Tay Nuun Dal Ray Seen Tay": "تندرست",  # Tandrust (healthy)
+    "Meem Hay Bay Tay": "محبت",  # Mohabbat (love)
+    "Dal Wao Seen Tay": "دوست",  # Dost (friend)
+    "Khay Wao Sheen": "خوش",  # Khush (happy)
+    "Bay Alif Tay": "بات",  # Baat (talk)
+    "Kaaf Yay Seen Alif": "کیسا",  # Kaisa (how)
+    "Kaaf Yay Seen Zaey": "کیسی",  # Kaisi (how - feminine)
+    "Hay Alif Lam": "حال",  # Haal (condition)
+    "Tay Meem": "تم",  # Tum (you)
+    "Meem Alif Zaey Nuun": "ماں",  # Maa (mother)
+    "Bay Alif Pay": "باپ",  # Baap (father)
+    "Bay Hay Nuun": "بہن",  # Behan (sister)
+    "Bay Hay Alif Zaey": "بھائی",  # Bhai (brother)
+    "Gaaf Hay Ray": "گھر",  # Ghar (house)
+    "Seen Kaaf Wao Lam": "سکول",  # School
+    "Wao Kaaf Tay": "وقت",  # Waqt (time)
+    "Dal Nuun": "دن",  # Din (day)
+    "Ray Alif Tay": "رات",  # Raat (night)
+}
+
+# Common Urdu phrases for sentence completion
+URDU_PHRASES = [
+    ("Alif Seen Lam Alif Meem Alif Lam Yay Kaaf Meem", "السلام علیکم", "Assalam-o-Alaikum"),
+    ("Wao Alif Lam Yay Kaaf Meem Alif Seen Lam Alif Meem", "وعلیکم السلام", "Wa-Alaikum-Salaam"),
+    ("Sheen Kaaf Ray Yay Alif", "شکریہ", "Thank you"),
+    ("Khay Wao Sheen Alif Meem Dal Yay Dal", "خوش آمدید", "Welcome"),
+    ("Alif Chay Dochahay Alif", "اچھا", "Good/Okay"),
+    ("Tay Meem Kaaf Yay Seen Alif Hay Wao", "تم کیسے ہو", "How are you (m)"),
+    ("Tay Meem Kaaf Yay Seen Zaey Hay Wao", "تم کیسی ہو", "How are you (f)"),
+    ("Meem Alif Zaey Nuun Alif Chay Dochahay Alif Hay Alif Zaey", "میں اچھا ہوں", "I am fine (m)"),
+    ("Meem Alif Zaey Nuun Alif Chay Dochahay Zaey Hay Wao Nuun", "میں اچھی ہوں", "I am fine (f)"),
+    ("Alif Lam Lam Hay Kaaf Alif Sheen Kaaf Ray", "اللہ کا شکر", "Thanks to Allah"),
+]
+
+def predict_words(current_letters):
+    """
+    Predict possible words based on current letter sequence.
+    
+    Args:
+        current_letters: String of current letters (e.g., "Alif Chay")
+        
+    Returns:
+        List of tuples: (letter_sequence, urdu_word, remaining_letters)
+    """
+    predictions = []
+    current = current_letters.strip()
+    
+    if not current:
+        return predictions
+    
+    # Find words that start with current letters
+    for letter_seq, urdu_word in URDU_WORD_DICT.items():
+        if letter_seq.startswith(current):
+            # Calculate remaining letters needed
+            remaining = letter_seq[len(current):].strip()
+            predictions.append((letter_seq, urdu_word, remaining))
+    
+    # Sort by length (shorter completions first)
+    predictions.sort(key=lambda x: len(x[2]))
+    
+    return predictions[:5]  # Return top 5 predictions
+
+def suggest_phrases(current_sentence):
+    """
+    Suggest common phrases based on current sentence.
+    
+    Args:
+        current_sentence: Current accumulated sentence
+        
+    Returns:
+        List of tuples: (letter_sequence, urdu_text, english_meaning)
+    """
+    suggestions = []
+    current = current_sentence.strip()
+    
+    if not current:
+        # Return common greetings if nothing typed
+        return URDU_PHRASES[:3]
+    
+    # Find phrases that start with current sentence
+    for letter_seq, urdu_text, english in URDU_PHRASES:
+        if letter_seq.startswith(current):
+            suggestions.append((letter_seq, urdu_text, english))
+    
+    return suggestions[:3]  # Return top 3 suggestions
+
+
 def convert_to_urdu_script(sentence):
     """
     Convert PSL letter names to Urdu script characters with proper shaping.
@@ -295,7 +397,8 @@ def speak_word(word_letters):
         try:
             # Create async function to generate speech with edge-tts
             async def generate_speech():
-                communicate = edge_tts.Communicate(urdu_word, VOICE)
+                # Slow down speech rate by 20% for clearer pronunciation
+                communicate = edge_tts.Communicate(urdu_word, VOICE, rate="-20%")
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as fp:
                     temp_file = fp.name
                 await communicate.save(temp_file)
@@ -440,9 +543,50 @@ def run_inference():
             cv2.putText(frame, f"FPS: {current_fps:.1f}", (w - 150, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 255, 100), 2)
         
+        # Get current word (last segment after |)
+        parts = sentence.split(" | ")
+        current_word = parts[-1].strip()
+        
+        # Word predictions
+        if current_word:
+            predictions = predict_words(current_word)
+            if predictions:
+                # Draw prediction box
+                pred_y = 270
+                cv2.putText(frame, "Predictions (press 1-5):", (20, pred_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+                
+                for idx, (full_seq, urdu_word, remaining) in enumerate(predictions, 1):
+                    pred_y += 35
+                    # Show number with cv2
+                    cv2.putText(frame, f"{idx}.", (30, pred_y),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 150), 2)
+                    
+                    # Display Urdu word using PIL
+                    frame = put_urdu_text(frame, urdu_word, (60, pred_y - 25), 
+                                         font_size=30, color=(150, 255, 150))
+                    
+                    # Show remaining letters count
+                    if remaining:
+                        cv2.putText(frame, f"(+{len(remaining.split())})", (200, pred_y),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 200, 100), 1)
+        
+        # Phrase suggestions
+        phrase_suggestions = suggest_phrases(sentence)
+        if phrase_suggestions and not current_word:
+            # Draw phrase suggestion box
+            phrase_y = 270
+            cv2.putText(frame, "Common Phrases:", (w - 350, phrase_y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 150, 255), 2)
+            
+            for idx, (_, urdu_text, english) in enumerate(phrase_suggestions, 1):
+                phrase_y += 25
+                cv2.putText(frame, f"{english}", (w - 340, phrase_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 255), 1)
+        
         # Instructions
-        cv2.putText(frame, "Press 'q' to quit | 'c' to clear | 'space' for space",
-                   (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        cv2.putText(frame, "Press 'q' to quit | 'c' to clear | 'space' for space | 1-5 for predictions",
+                   (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
         cv2.imshow("Listen - PSL Real-Time Recognition", frame)
         
@@ -466,6 +610,27 @@ def run_inference():
             # Add space separator
             sentence += " | "
             print("Space added")
+        elif key in [ord('1'), ord('2'), ord('3'), ord('4'), ord('5')]:
+            # Handle prediction selection
+            pred_num = int(chr(key))
+            parts = sentence.split(" | ")
+            current_word = parts[-1].strip()
+            
+            if current_word:
+                predictions = predict_words(current_word)
+                if predictions and pred_num <= len(predictions):
+                    # Get the selected prediction
+                    selected_seq, selected_urdu, _ = predictions[pred_num - 1]
+                    
+                    # Replace current word with selected prediction
+                    parts[-1] = selected_seq + " "
+                    sentence = " | ".join(parts)
+                    
+                    print(f"✓ Auto-completed to: {selected_urdu}")
+                    
+                    # Optionally speak the completed word
+                    speak_word(selected_seq)
+
     
     cap.release()
     cv2.destroyAllWindows()
