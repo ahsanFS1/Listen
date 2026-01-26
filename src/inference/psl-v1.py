@@ -312,8 +312,6 @@ def put_urdu_text(img, text, position, font_size=40, color=(0, 255, 255)):
     img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(img_pil)
     
-    # Try to use a system font that supports Arabic/Urdu
-    # macOS has Arial Unicode MS which supports Urdu
     try:
         font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", font_size)
     except:
@@ -324,13 +322,10 @@ def put_urdu_text(img, text, position, font_size=40, color=(0, 255, 255)):
             # If no font found, use default (may not display correctly)
             font = ImageFont.load_default()
     
-    # Convert BGR to RGB for PIL
     rgb_color = (color[2], color[1], color[0])
     
-    # Draw text
     draw.text(position, text, font=font, fill=rgb_color)
     
-    # Convert back to OpenCV BGR
     return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
 # ---------------------------------------------------------------------
@@ -551,7 +546,6 @@ def run_inference():
         if current_word:
             predictions = predict_words(current_word)
             if predictions:
-                # Draw prediction box
                 pred_y = 270
                 cv2.putText(frame, "Predictions (press 1-5):", (20, pred_y),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
