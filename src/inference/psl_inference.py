@@ -15,8 +15,8 @@ from pathlib import Path
 # Configuration
 # ---------------------------------------------------------------------
 MODEL_PATH = "models/psl/psl_landmark_classifier.h5"
-LABEL_ENCODER_PATH = "data/psl_processed/label_encoder.pkl"
-SCALER_PATH = "data/psl_processed/scaler.pkl"
+LABEL_ENCODER_PATH = "models/psl/label_encoder.pkl"
+SCALER_PATH = "models/psl/scaler.pkl"
 
 print("=" * 70)
 print("PSL (Pakistan Sign Language) Inference")
