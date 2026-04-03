@@ -357,6 +357,28 @@ def detect_thumbs_up(hand_landmarks):
 
     return thumb_up and index_curled and middle_curled and ring_curled and pinky_curled
 
+def count_raised_fingers(hand_landmarks):
+    """
+    Count extended fingers using tip and PIP joint Y-coordinates.
+    Handles Thumb using X-axis orientation (checks distance spread from palm).
+    """
+    lm = hand_landmarks.landmark
+    count = 0
+    
+    # 4 Fingers
+    if lm[8].y < lm[6].y: count += 1   # Index
+    if lm[12].y < lm[10].y: count += 1 # Middle
+    if lm[16].y < lm[14].y: count += 1 # Ring
+    if lm[20].y < lm[18].y: count += 1 # Pinky
+    
+    # Thumb (approximate spread from palm center)
+    dist_tip = abs(lm[4].x - lm[0].x)
+    dist_mcp = abs(lm[2].x - lm[0].x)
+    if dist_tip > dist_mcp + 0.02: 
+        count += 1
+        
+    return count
+
 def speak_word(word_letters):
     """
     Speak the Urdu word using Google Text-to-Speech.
@@ -453,10 +475,17 @@ def run_inference():
     thumbs_up_count = 0          # frames thumbs-up held
     THUMBS_UP_REQUIRED = 30      # ~1 sec at 30fps to confirm gesture
     thumbs_up_triggered = False  # prevent repeat trigger while held
+    
+    # Selection Finger Tracker
+    last_finger_count = 0
+    finger_stable_count = 0
+    FINGER_STABLE_REQUIRED = 15  # Half sec hold to select option
+
     fps_time = time.time()
     frame_count = 0
     
     while True:
+        synthetic_key = None
         ret, frame = cap.read()
         if not ret:
             break
@@ -474,6 +503,9 @@ def run_inference():
         
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
+                # Spatial interaction mode! Right side of frame = Menu Selection. Left/Center = Spelling.
+                is_selection_mode = hand_landmarks.landmark[0].x > 0.55
+                
                 # Draw hand landmarks with style
                 mp_draw.draw_landmarks(
                     frame,
@@ -483,52 +515,81 @@ def run_inference():
                     mp_drawing_styles.get_default_hand_connections_style()
                 )
                 
-                # Extract 21 (x, y) landmarks
-                landmarks = []
-                for lm in hand_landmarks.landmark:
-                    landmarks.extend([lm.x, lm.y])
+                # Draw Hand Mode Tracker physically on the wrist
+                wrist_x = int(hand_landmarks.landmark[0].x * w)
+                wrist_y = int(hand_landmarks.landmark[0].y * h)
+                mode_text = "MODE: SELECTION" if is_selection_mode else "MODE: SPELLING"
+                mode_color = (255, 255, 0) if is_selection_mode else (0, 255, 0)
+                cv2.putText(frame, mode_text, (wrist_x - 50, wrist_y + 40), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, mode_color, 2)
+                
+                if not is_selection_mode:
+                    # ─── SPELLING MODE ───
+                    landmarks = []
+                    for lm in hand_landmarks.landmark:
+                        landmarks.extend([lm.x, lm.y])
 
-                # ----- Thumbs-Up gesture = Word Done -----
-                if detect_thumbs_up(hand_landmarks):
-                    thumbs_up_count += 1
-                    # Show progress bar for thumbs-up
-                    bar_len = int((thumbs_up_count / THUMBS_UP_REQUIRED) * 200)
-                    cv2.rectangle(frame, (w - 230, 10), (w - 230 + bar_len, 30), (0, 215, 255), -1)
-                    cv2.rectangle(frame, (w - 230, 10), (w - 30, 30), (255, 255, 255), 2)
-                    cv2.putText(frame, "👍 Word Done", (w - 230, 50),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 215, 255), 2)
+                    # Thumbs-Up gesture = Word Done
+                    if detect_thumbs_up(hand_landmarks):
+                        thumbs_up_count += 1
+                        bar_len = int((thumbs_up_count / THUMBS_UP_REQUIRED) * 200)
+                        cv2.rectangle(frame, (w - 230, 10), (w - 230 + bar_len, 30), (0, 215, 255), -1)
+                        cv2.rectangle(frame, (w - 230, 10), (w - 30, 30), (255, 255, 255), 2)
+                        cv2.putText(frame, "👍 Word Done", (w - 230, 50),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 215, 255), 2)
 
-                    if thumbs_up_count >= THUMBS_UP_REQUIRED and not thumbs_up_triggered:
-                        parts = sentence.split(" | ")
-                        current_word = parts[-1].strip()
-                        if current_word:
-                            speak_word(current_word)
-                            print(f"👍 Thumbs-up: word done → {current_word}")
-                            urdu_parts.append(convert_to_urdu_script(current_word))
-                        sentence += " | "
-                        thumbs_up_triggered = True
+                        if thumbs_up_count >= THUMBS_UP_REQUIRED and not thumbs_up_triggered:
+                            parts = sentence.split(" | ")
+                            current_word = parts[-1].strip()
+                            if current_word:
+                                speak_word(current_word)
+                                print(f"👍 Thumbs-up: word done → {current_word}")
+                                urdu_parts.append(convert_to_urdu_script(current_word))
+                            sentence += " | "
+                            thumbs_up_triggered = True
+                            thumbs_up_count = 0
+                    else:
                         thumbs_up_count = 0
-                else:
-                    thumbs_up_count = 0
-                    thumbs_up_triggered = False
+                        thumbs_up_triggered = False
 
-                # ----- Normal sign prediction -----
-                label, conf = predict_sign(landmarks)
-                last_label, stable_count, sentence = update_text(
-                    label, conf, last_label, stable_count, sentence
-                )
+                    # Normal sign prediction
+                    label, conf = predict_sign(landmarks)
+                    last_label, stable_count, sentence = update_text(
+                        label, conf, last_label, stable_count, sentence
+                    )
+                    
+                    # Display prediction
+                    color = (0, 255, 0) if conf > 0.85 else (0, 165, 255)
+                    cv2.putText(frame, f"{label} ({conf*100:.1f}%)", (20, 50), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3, cv2.LINE_AA)
+                    
+                    # Stability indicator
+                    stability_bar = int((stable_count / 40) * 200)
+                    cv2.rectangle(frame, (20, 70), (20 + stability_bar, 85), (0, 255, 0), -1)
+                    cv2.rectangle(frame, (20, 70), (220, 85), (255, 255, 255), 2)
                 
-                # Display current prediction
-                pred_text = f"{label} ({conf*100:.1f}%)"
-                color = (0, 255, 0) if conf > 0.85 else (0, 165, 255)
-                cv2.putText(frame, pred_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX,
-                           1.2, color, 3, cv2.LINE_AA)
-                
-                # Stability indicator
-                stability_bar = int((stable_count / 40) * 200)
-                cv2.rectangle(frame, (20, 70), (20 + stability_bar, 85),
-                            (0, 255, 0), -1)
-                cv2.rectangle(frame, (20, 70), (220, 85), (255, 255, 255), 2)
+                else:
+                    # ─── MENU SELECTION MODE ───
+                    fc = count_raised_fingers(hand_landmarks)
+                    
+                    # Ensure fingers match menu options (1-5)
+                    if fc == last_finger_count and fc in [1, 2, 3, 4, 5]:
+                        finger_stable_count += 1
+                    else:
+                        finger_stable_count = 0
+                        last_finger_count = fc
+                    
+                    # Draw visual counter for user feedback
+                    cv2.putText(frame, f"Selecting: {fc}", (w - 300, 80), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 0), 2, cv2.LINE_AA)
+                    
+                    if finger_stable_count > 0 and fc > 0:
+                        bar_len = int((finger_stable_count / FINGER_STABLE_REQUIRED) * 150)
+                        cv2.rectangle(frame, (w - 300, 95), (w - 300 + bar_len, 105), (255, 255, 0), -1)
+                    
+                    if finger_stable_count >= FINGER_STABLE_REQUIRED:
+                        synthetic_key = ord(str(fc))
+                        finger_stable_count = -15  # Cooldown
         else:
             # No hand detected
             cv2.putText(frame, "No hand detected", (20, 50),
@@ -583,7 +644,7 @@ def run_inference():
         phrase_suggestions = suggest_phrases(full_urdu)
 
         # ── Right-side prediction panel ──
-        panel_w = 320
+        panel_w = 650
         panel_x = w - panel_w - 10
         panel_top = 270
         panel_items = predictions if predictions else []
@@ -619,12 +680,12 @@ def run_inference():
                             (panel_x - 4, current_y + 32),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 220, 80), 2)
                 frame = put_urdu_text(frame, urdu_word,
-                                      (panel_x + 36, current_y + 4),
+                                      (panel_x + 40, current_y + 4),
                                       font_size=34, color=(80, 255, 160))
                 if remaining:
                     rem_count = len(remaining.split())
                     cv2.putText(frame, f"+{rem_count} signs",
-                                (panel_x + 200, current_y + 36),
+                                (panel_x + 400, current_y + 36),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 200, 160), 1)
                 current_y += 52
 
@@ -642,8 +703,8 @@ def run_inference():
                             (panel_x - 4, current_y + 22),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 180, 255), 1)
                 frame = put_urdu_text(frame, english,
-                                      (panel_x + 28, current_y + 2),
-                                      font_size=22, color=(255, 200, 255))
+                                      (panel_x + 35, current_y + 2),
+                                      font_size=24, color=(255, 200, 255))
                 current_y += 40
 
         if not predictions and not phrases_to_show:
@@ -663,6 +724,12 @@ def run_inference():
         
         # Keyboard controls
         key = cv2.waitKey(1) & 0xFF
+        
+        # Override with synthetic key if finger selection triggered
+        if synthetic_key:
+            key = synthetic_key
+            print(f"[UI] Triggered selection option {chr(synthetic_key)} via gesture")
+            
         if key == ord('q'):
             break
         elif key == ord('c'):
