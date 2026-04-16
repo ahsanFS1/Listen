@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.preprocessing import LabelEncoder
 
 # ---------------------------------------------------------------------
 # Configuration
@@ -25,6 +26,11 @@ from sklearn.utils.class_weight import compute_class_weight
 DATA_DIR = "data/psl_word_processed"
 MODEL_DIR = "models/psl_words"
 os.makedirs(MODEL_DIR, exist_ok=True)
+
+# Classes to exclude from training (junk / non-semantic labels).
+# The preprocessed .npy files still contain them; we filter at load time
+# so we don't need to rerun preprocessing.
+EXCLUDE_CLASSES = {"test_word"}
 
 BATCH_SIZE = 32
 EPOCHS = 80
@@ -118,7 +124,38 @@ def main():
     y_val = np.load(os.path.join(DATA_DIR, "y_val.npy"))
     X_test = np.load(os.path.join(DATA_DIR, "X_test.npy"))
     y_test = np.load(os.path.join(DATA_DIR, "y_test.npy"))
-    label_encoder = joblib.load(os.path.join(DATA_DIR, "label_encoder.pkl"))
+    src_encoder = joblib.load(os.path.join(DATA_DIR, "label_encoder.pkl"))
+
+    # Filter excluded classes and re-index labels to a dense 0..N-1 space.
+    if EXCLUDE_CLASSES:
+        src_classes = list(src_encoder.classes_)
+        drop_ids = {i for i, c in enumerate(src_classes) if c in EXCLUDE_CLASSES}
+        keep_classes = [c for c in src_classes if c not in EXCLUDE_CLASSES]
+
+        def filter_split(X, y):
+            mask = ~np.isin(y, list(drop_ids))
+            return X[mask], y[mask]
+
+        before = len(y_train) + len(y_val) + len(y_test)
+        X_train, y_train = filter_split(X_train, y_train)
+        X_val,   y_val   = filter_split(X_val,   y_val)
+        X_test,  y_test  = filter_split(X_test,  y_test)
+        after = len(y_train) + len(y_val) + len(y_test)
+        print(f"  Excluded classes: {sorted(EXCLUDE_CLASSES)}")
+        print(f"  Samples dropped:  {before - after:,} / {before:,}")
+
+        label_encoder = LabelEncoder()
+        label_encoder.fit(keep_classes)
+        # Map old ids -> new ids via class-name lookup
+        old_to_new = {
+            src_classes.index(c): new_id for new_id, c in enumerate(label_encoder.classes_)
+        }
+        remap = np.vectorize(old_to_new.get)
+        y_train = remap(y_train).astype(np.int64)
+        y_val   = remap(y_val).astype(np.int64)
+        y_test  = remap(y_test).astype(np.int64)
+    else:
+        label_encoder = src_encoder
 
     _, T, F = X_train.shape
     num_classes = len(label_encoder.classes_)

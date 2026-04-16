@@ -392,10 +392,23 @@ def run():
         ok, frame = cap.read()
         if not ok:
             break
-        frame = cv2.flip(frame, 1)
+        # IMPORTANT: MediaPipe's handedness classifier assumes a non-mirrored
+        # image. Process the raw frame for landmark extraction, draw the
+        # skeleton on the un-flipped frame (so coords match), then flip the
+        # whole frame for the user so the display feels like a mirror.
         h_img, w_img, _ = frame.shape
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = hands.process(rgb)
+
+        if results.multi_hand_landmarks:
+            for hlm in results.multi_hand_landmarks:
+                mp_draw.draw_landmarks(
+                    frame, hlm, mp_hands.HAND_CONNECTIONS,
+                    mp_styles.get_default_hand_landmarks_style(),
+                    mp_styles.get_default_hand_connections_style(),
+                )
+
+        frame = cv2.flip(frame, 1)
 
         # 1. Feature extraction from this frame
         raw_vec = frame_from_mediapipe(results)
@@ -429,18 +442,10 @@ def run():
             print(f"+ {committed}  ->  {' '.join(sentence)}")
             speak_urdu(committed)
 
-        # 3. Draw overlay
+        # 3. Draw text overlay on top of the (already flipped) frame
         overlay = frame.copy()
         cv2.rectangle(overlay, (0, 0), (w_img, 260), (0, 0, 0), -1)
         frame = cv2.addWeighted(overlay, 0.5, frame, 0.5, 0)
-
-        if results.multi_hand_landmarks:
-            for hlm in results.multi_hand_landmarks:
-                mp_draw.draw_landmarks(
-                    frame, hlm, mp_hands.HAND_CONNECTIONS,
-                    mp_styles.get_default_hand_landmarks_style(),
-                    mp_styles.get_default_hand_connections_style(),
-                )
 
         color = (0, 255, 0) if top_conf > COMMIT_CONF else (0, 165, 255)
         cv2.putText(frame, f"{top_label} ({top_conf*100:.1f}%)",

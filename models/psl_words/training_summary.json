@@ -1,9 +1,9 @@
 {
-  "test_loss": 0.1319374442100525,
-  "test_accuracy": 0.9757575988769531,
-  "test_top5": 0.9954545497894287,
-  "epochs_run": 43,
-  "num_classes": 65,
+  "test_loss": 0.14514505863189697,
+  "test_accuracy": 0.9815950989723206,
+  "test_top5": 0.9938650131225586,
+  "epochs_run": 41,
+  "num_classes": 64,
   "classes": [
     "absolutely",
     "aircrash",
@@ -60,7 +60,6 @@
     "shampoo",
     "shower",
     "sunglasses",
-    "test_word",
     "thankyou",
     "tissue",
     "toothbrush",
