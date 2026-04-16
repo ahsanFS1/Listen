@@ -161,23 +161,21 @@ def load_model():
 def frame_from_mediapipe(results):
     """Return (126,) float32 vector: [lh_xyz*21][rh_xyz*21].
 
-    Uses MediaPipe Hands' per-hand classification to place each detected
-    hand in the correct half of the vector. Missing hand -> zeros.
+    Reads from MediaPipe Holistic, which assigns `left_hand_landmarks`
+    and `right_hand_landmarks` anatomically (not based on image-side
+    handedness). Missing hand -> zeros. This layout matches the
+    training data exactly.
     """
-    lh = np.zeros(63, dtype=np.float32)
-    rh = np.zeros(63, dtype=np.float32)
-    if results.multi_hand_landmarks and results.multi_handedness:
-        for hand_landmarks, handed in zip(results.multi_hand_landmarks,
-                                          results.multi_handedness):
-            label = handed.classification[0].label  # "Left" or "Right"
-            flat = np.array(
-                [[p.x, p.y, p.z] for p in hand_landmarks.landmark],
-                dtype=np.float32,
-            ).reshape(-1)
-            if label == "Left":
-                lh = flat
-            else:
-                rh = flat
+    def flatten(landmark_list):
+        if landmark_list is None:
+            return np.zeros(63, dtype=np.float32)
+        return np.array(
+            [[p.x, p.y, p.z] for p in landmark_list.landmark],
+            dtype=np.float32,
+        ).reshape(-1)
+
+    lh = flatten(results.left_hand_landmarks)
+    rh = flatten(results.right_hand_landmarks)
     return np.concatenate([lh, rh])
 
 
@@ -360,12 +358,13 @@ def run():
     committer = Committer(classes)
     print(f"Loaded model, {len(classes)} classes.")
 
-    mp_hands = mp.solutions.hands
+    mp_holistic = mp.solutions.holistic
+    mp_hands_sol = mp.solutions.hands  # for HAND_CONNECTIONS in drawing
     mp_draw = mp.solutions.drawing_utils
     mp_styles = mp.solutions.drawing_styles
-    hands = mp_hands.Hands(
+    holistic = mp_holistic.Holistic(
         static_image_mode=False,
-        max_num_hands=2,
+        model_complexity=1,
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5,
     )
@@ -398,12 +397,12 @@ def run():
         # whole frame for the user so the display feels like a mirror.
         h_img, w_img, _ = frame.shape
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(rgb)
+        results = holistic.process(rgb)
 
-        if results.multi_hand_landmarks:
-            for hlm in results.multi_hand_landmarks:
+        for hlm in (results.left_hand_landmarks, results.right_hand_landmarks):
+            if hlm is not None:
                 mp_draw.draw_landmarks(
-                    frame, hlm, mp_hands.HAND_CONNECTIONS,
+                    frame, hlm, mp_hands_sol.HAND_CONNECTIONS,
                     mp_styles.get_default_hand_landmarks_style(),
                     mp_styles.get_default_hand_connections_style(),
                 )
