@@ -1,0 +1,7 @@
+# Listen - PSL session log
+# Saved: 2026-04-17T21:18:30.933209
+# Threshold at exit: 65%
+#
+2026-04-17T21:17:18	peacock	مور
+2026-04-17T21:17:41	left_hand	بایاں ہاتھ
+2026-04-17T21:18:27	sunglasses	دھوپ کے چشمے

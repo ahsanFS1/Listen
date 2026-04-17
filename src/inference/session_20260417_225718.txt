@@ -1,0 +1,6 @@
+# Listen - PSL session log
+# Saved: 2026-04-17T22:57:18.828897
+# Threshold at exit: 70%
+#
+2026-04-17T22:56:52	umbrella	چھتری
+2026-04-17T22:57:10	all	سب

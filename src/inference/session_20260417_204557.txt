@@ -1,0 +1,5 @@
+# Listen - PSL session log
+# Saved: 2026-04-17T20:45:57.859274
+# Threshold at exit: 70%
+#
+2026-04-17T20:45:54	door	دروازہ
