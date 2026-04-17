@@ -22,6 +22,7 @@ Layout revision (post-feedback):
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import queue
 import sys
@@ -215,8 +216,13 @@ def get_font(size: int) -> ImageFont.FreeTypeFont:
     return f
 
 
+@functools.lru_cache(maxsize=2048)
 def shape_urdu(text: str) -> str:
-    """Reshape + bidi an Urdu string so it renders correctly in Pillow."""
+    """Reshape + bidi an Urdu string so it renders correctly in Pillow.
+
+    Cached: the same sentence is reshaped every frame; the cache makes
+    subsequent frames ~free.
+    """
     if not text:
         return ""
     if ARABIC_SUPPORT:
@@ -225,6 +231,12 @@ def shape_urdu(text: str) -> str:
         except Exception:
             return text
     return text
+
+
+# Reusable offscreen PIL draw context for text measurement. Avoids
+# allocating + converting the full canvas just to measure glyph widths.
+_MEASURE_IMG = Image.new("RGB", (4, 4))
+_MEASURE_DRAW = ImageDraw.Draw(_MEASURE_IMG)
 
 
 # =====================================================================
@@ -439,6 +451,92 @@ def draw_wrapped_rtl(img: np.ndarray, right_x: int, top_y: int,
         draw.text((right_x - w, top_y + i * line_height),
                   shaped, font=font, fill=rgb)
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+
+
+class _TextBatch:
+    """Queue text draws and apply them in a single PIL round-trip.
+
+    Each of ``draw_text`` / ``draw_rtl_text`` / ``draw_wrapped_rtl`` on
+    its own does a full BGR->PIL->BGR conversion of the canvas. The
+    main UI fires ~20 such calls per frame, which at 1440x810 costs
+    more than the MediaPipe + inference pipeline combined. Batching
+    them into one conversion per frame is the single biggest win.
+    """
+
+    __slots__ = ("ops",)
+
+    def __init__(self) -> None:
+        self.ops: list = []
+
+    def draw(self, xy: Tuple[int, int], text: str, size: int,
+             color: Tuple[int, int, int] = COLOR_TEXT,
+             shape: bool = False) -> None:
+        """Equivalent to module-level ``draw_text`` but deferred."""
+        if text:
+            self.ops.append(("d", xy, text, size, color, shape))
+
+    def rtl(self, right_xy: Tuple[int, int], text: str, size: int,
+            color: Tuple[int, int, int] = COLOR_TEXT) -> None:
+        """Equivalent to module-level ``draw_rtl_text`` but deferred."""
+        if text:
+            self.ops.append(("r", right_xy, text, size, color))
+
+    def wrap(self, right_x: int, top_y: int, text: str, size: int,
+             max_width: int, line_height: int, max_lines: int,
+             color: Tuple[int, int, int] = COLOR_TEXT) -> None:
+        """Equivalent to module-level ``draw_wrapped_rtl`` but deferred."""
+        if text:
+            self.ops.append(("w", right_x, top_y, text, size,
+                             max_width, line_height, max_lines, color))
+
+    def flush(self, img: np.ndarray) -> np.ndarray:
+        """Apply all queued ops in a single PIL pass and return the image."""
+        if not self.ops:
+            return img
+        pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(pil)
+        for op in self.ops:
+            kind = op[0]
+            if kind == "d":
+                _, xy, text, size, color, shape = op
+                t = shape_urdu(text) if shape else text
+                rgb = (color[2], color[1], color[0])
+                draw.text(xy, t, font=get_font(size), fill=rgb)
+            elif kind == "r":
+                _, right_xy, text, size, color = op
+                shaped = shape_urdu(text)
+                font = get_font(size)
+                w = _measure_text_width(draw, shaped, font)
+                rgb = (color[2], color[1], color[0])
+                draw.text((right_xy[0] - w, right_xy[1]), shaped,
+                          font=font, fill=rgb)
+            else:  # "w"
+                (_, right_x, top_y, text, size, max_width,
+                 line_height, max_lines, color) = op
+                font = get_font(size)
+                rgb = (color[2], color[1], color[0])
+                words = text.split()
+                lines: List[str] = []
+                cur: List[str] = []
+                for word in words:
+                    candidate = " ".join(cur + [word])
+                    shaped = shape_urdu(candidate)
+                    if (_measure_text_width(draw, shaped, font) <= max_width
+                            or not cur):
+                        cur.append(word)
+                    else:
+                        lines.append(" ".join(cur))
+                        cur = [word]
+                if cur:
+                    lines.append(" ".join(cur))
+                lines = lines[-max_lines:]
+                for i, raw_line in enumerate(lines):
+                    shaped = shape_urdu(raw_line)
+                    w = _measure_text_width(draw, shaped, font)
+                    draw.text((right_x - w, top_y + i * line_height),
+                              shaped, font=font, fill=rgb)
+        self.ops.clear()
+        return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
 
 def filled_panel(img: np.ndarray, x0: int, y0: int, x1: int, y1: int,
@@ -1258,20 +1356,17 @@ class ListenApp:
             # Draw landmarks onto proc frame
             self._draw_landmarks(proc_frame_bgr, results)
 
-            # Compose final canvas
-            canvas = self._compose(proc_frame_bgr, has_hands)
-
-            # FPS overlay (top-right)
+            # FPS (computed before compose so it can be batched with
+            # the rest of the frame's text into one PIL round-trip)
             fps_n += 1
             if fps_n >= 10:
                 dt = time.time() - fps_t0
                 fps = fps_n / dt if dt > 0 else 0.0
                 fps_t0 = time.time()
                 fps_n = 0
-            canvas = draw_text(
-                canvas, (DISPLAY_WIDTH - 180, 14),
-                f"FPS {fps:4.1f}", 18, COLOR_TEXT_DIM,
-            )
+
+            # Compose final canvas
+            canvas = self._compose(proc_frame_bgr, has_hands, fps=fps)
 
             cv2.imshow(WINDOW_TITLE, canvas)
             key = cv2.waitKey(1) & 0xFF
@@ -1345,11 +1440,13 @@ class ListenApp:
                 self.history.pop()
 
     # ------------------------- compose UI ----------------------------
-    def _compose(self, proc_bgr: np.ndarray, has_hands: bool) -> np.ndarray:
+    def _compose(self, proc_bgr: np.ndarray, has_hands: bool,
+                 fps: float = 0.0) -> np.ndarray:
         """Build and return the full two-panel UI frame for this tick."""
         canvas = np.full(
             (DISPLAY_HEIGHT, DISPLAY_WIDTH, 3), COLOR_BG, dtype=np.uint8,
         )
+        batch = _TextBatch()
 
         # Panel geometry
         left_w = int(DISPLAY_WIDTH * LEFT_PANEL_FRAC)
@@ -1376,17 +1473,15 @@ class ListenApp:
         # Camera border + label
         cv2.rectangle(canvas, (cam_x0 - 4, cam_y0 - 4),
                       (cam_x1 + 4, cam_y1 + 4), COLOR_PANEL_LIGHT, 2)
-        canvas = draw_text(canvas, (cam_x0, 10),
-                           "Live camera", 20, COLOR_TEXT_DIM)
+        batch.draw((cam_x0, 10), "Live camera", 20, COLOR_TEXT_DIM)
 
         # ---- Centre popup (light, auto-dismiss when hands appear) ----
         if self.center_popup_alpha > 0.02 and self.center_popup_text:
             popup_text = self.center_popup_text
-            # Size the popup to its text
-            pil = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
-            draw = ImageDraw.Draw(pil)
+            # Size the popup to its text using the offscreen measurer
+            # so we don't convert the full canvas just to measure.
             font = get_font(26)
-            tw = _measure_text_width(draw, popup_text, font)
+            tw = _measure_text_width(_MEASURE_DRAW, popup_text, font)
             pad_x, pad_y = 28, 14
             pw = tw + 2 * pad_x
             ph = 56
@@ -1400,10 +1495,8 @@ class ListenApp:
             cv2.addWeighted(overlay, a, canvas, 1 - a, 0.0, dst=canvas)
             cv2.rectangle(canvas, (px0, py0), (px1, py1),
                           COLOR_PANEL_LIGHT, 1)
-            canvas = draw_text(
-                canvas, (px0 + pad_x, py0 + pad_y),
-                popup_text, 26, COLOR_TEXT,
-            )
+            batch.draw((px0 + pad_x, py0 + pad_y),
+                       popup_text, 26, COLOR_TEXT)
 
         # ---- Undo progress ring (small, bottom-left of camera) ------
         if (self.state is SignState.IDLE
@@ -1416,8 +1509,7 @@ class ListenApp:
             cv2.circle(canvas, (cx, cy), 34, COLOR_PANEL_LIGHT, 2)
             cv2.ellipse(canvas, (cx, cy), (34, 34), -90,
                         0, int(360 * frac), COLOR_WARN, 4)
-            canvas = draw_text(canvas, (cx - 24, cy - 12),
-                               "UNDO", 14, COLOR_TEXT)
+            batch.draw((cx - 24, cy - 12), "UNDO", 14, COLOR_TEXT)
 
         # ---- Virtual Buttons (Top of Camera) ----
         btn_y = cam_y0 + 20
@@ -1446,8 +1538,7 @@ class ListenApp:
             PSL_WORD_TO_URDU.get(w, w) for w in self.history
         )
         if urdu_sentence:
-            canvas = draw_wrapped_rtl(
-                canvas,
+            batch.wrap(
                 right_x=cam_x1 - 18,
                 top_y=cap_y0 + 12,
                 text=urdu_sentence,
@@ -1458,8 +1549,8 @@ class ListenApp:
                 color=COLOR_TEXT,
             )
         else:
-            canvas = draw_text(
-                canvas, (cam_x0 + 18, cap_y0 + 18),
+            batch.draw(
+                (cam_x0 + 18, cap_y0 + 18),
                 "Your sentence will appear here.",
                 20, COLOR_TEXT_DIM,
             )
@@ -1473,21 +1564,13 @@ class ListenApp:
                      COLOR_PANEL, PANEL_ALPHA)
 
         # --- Current word (English + Urdu) ---
-        canvas = draw_text(
-            canvas, (rp_x0 + 24, 24),
-            "Current word", 18, COLOR_TEXT_DIM,
-        )
+        batch.draw((rp_x0 + 24, 24), "Current word", 18, COLOR_TEXT_DIM)
         label_disp = (self.current_label
                       if self.current_label not in IDLE_CLASSES
                       else "-")
-        canvas = draw_text(
-            canvas, (rp_x0 + 24, 48),
-            label_disp, 32, COLOR_ACCENT,
-        )
+        batch.draw((rp_x0 + 24, 48), label_disp, 32, COLOR_ACCENT)
         urdu = PSL_WORD_TO_URDU.get(label_disp, "-")
-        canvas = draw_rtl_text(
-            canvas, (rp_x1 - 24, 48), urdu, 52, COLOR_TEXT,
-        )
+        batch.rtl((rp_x1 - 24, 48), urdu, 52, COLOR_TEXT)
 
         # --- Confidence bar ---
         bar_x = rp_x0 + 24
@@ -1508,48 +1591,40 @@ class ListenApp:
         tx = bar_x + int(bar_w * self.conf_threshold)
         cv2.line(canvas, (tx, bar_y - 6),
                  (tx, bar_y + bar_h + 6), COLOR_ERR, 2)
-        canvas = draw_text(
-            canvas, (bar_x, bar_y - 22),
-            f"Confidence  {int(conf * 100)}%",
-            18, COLOR_TEXT,
-        )
+        batch.draw((bar_x, bar_y - 22),
+                   f"Confidence  {int(conf * 100)}%", 18, COLOR_TEXT)
 
         # --- State indicator ---
         state_lbl = STATE_LABEL[self.state]
         state_col = STATE_COLORS[state_lbl]
         sy = 210
         cv2.circle(canvas, (rp_x0 + 36, sy + 12), 10, state_col, -1)
-        canvas = draw_text(canvas, (rp_x0 + 56, sy),
-                           f"State: {state_lbl}", 22, COLOR_TEXT)
+        batch.draw((rp_x0 + 56, sy), f"State: {state_lbl}", 22, COLOR_TEXT)
         if self.state is SignState.COOLDOWN:
             remaining = max(0.0, self.cooldown_until - time.time())
-            canvas = draw_text(
-                canvas, (rp_x0 + 56, sy + 28),
-                f"Ready in {remaining:0.1f}s", 18, COLOR_TEXT_DIM,
-            )
+            batch.draw((rp_x0 + 56, sy + 28),
+                       f"Ready in {remaining:0.1f}s", 18, COLOR_TEXT_DIM)
         elif self.state is SignState.PREDICTING:
-            canvas = draw_text(canvas, (rp_x0 + 56, sy + 28),
-                               "Analyzing...", 18, COLOR_TEXT_DIM)
+            batch.draw((rp_x0 + 56, sy + 28),
+                       "Analyzing...", 18, COLOR_TEXT_DIM)
         elif self.state is SignState.SIGNING:
             frac = min(1.0, self._buf_fill / T_WINDOW)
-            canvas = draw_text(
-                canvas, (rp_x0 + 56, sy + 28),
-                f"Capturing  {int(frac * 100)}%", 18, COLOR_TEXT_DIM,
-            )
+            batch.draw((rp_x0 + 56, sy + 28),
+                       f"Capturing  {int(frac * 100)}%", 18, COLOR_TEXT_DIM)
         elif self.state is SignState.COMMITTED:
-            canvas = draw_text(canvas, (rp_x0 + 56, sy + 28),
-                               "Word committed", 18, COLOR_OK)
+            batch.draw((rp_x0 + 56, sy + 28),
+                       "Word committed", 18, COLOR_OK)
         else:
-            canvas = draw_text(canvas, (rp_x0 + 56, sy + 28),
-                               "Waiting for hands", 18, COLOR_TEXT_DIM)
+            batch.draw((rp_x0 + 56, sy + 28),
+                       "Waiting for hands", 18, COLOR_TEXT_DIM)
 
         # --- Confidence threshold slider (mid-panel) ---
         slider_x = rp_x0 + 24
         slider_y = 300
         slider_w = right_w - 48
         slider_h = 8
-        canvas = draw_text(
-            canvas, (slider_x, slider_y - 26),
+        batch.draw(
+            (slider_x, slider_y - 26),
             f"Confidence threshold  "
             f"{int(self.conf_threshold * 100)}%",
             18, COLOR_TEXT,
@@ -1568,14 +1643,11 @@ class ListenApp:
 
         # --- Suggestions (replaces history on the right panel) ------
         sug_y = 360
-        canvas = draw_text(
-            canvas, (rp_x0 + 24, sug_y),
-            "Suggestions", 20, COLOR_TEXT_DIM,
-        )
+        batch.draw((rp_x0 + 24, sug_y), "Suggestions", 20, COLOR_TEXT_DIM)
         row_h = 56
         if not self.suggestions:
-            canvas = draw_text(
-                canvas, (rp_x0 + 24, sug_y + 34),
+            batch.draw(
+                (rp_x0 + 24, sug_y + 34),
                 ("Keep signing to see phrase suggestions."
                  if self.db_conn
                  else "Suggestions unavailable (no dictionary DB)."),
@@ -1601,14 +1673,9 @@ class ListenApp:
                     (rp_x1 - 20, row_y + row_h - 10),
                     (90, 90, 110), 1,
                 )
-                canvas = draw_text(
-                    canvas, (rp_x0 + 30, row_y - 2),
-                    f"{i + 1}.", 18, COLOR_ACCENT,
-                )
-                canvas = draw_rtl_text(
-                    canvas, (rp_x1 - 30, row_y - 4),
-                    sug, 24, COLOR_TEXT,
-                )
+                batch.draw((rp_x0 + 30, row_y - 2),
+                           f"{i + 1}.", 18, COLOR_ACCENT)
+                batch.rtl((rp_x1 - 30, row_y - 4), sug, 24, COLOR_TEXT)
                 if hi and self.finger_stable_n >= 0:
                     frac = min(
                         1.0,
@@ -1622,6 +1689,16 @@ class ListenApp:
                         COLOR_ACCENT, -1,
                     )
 
+        # FPS indicator (top-right), folded into the same batch so the
+        # whole frame's text costs one PIL conversion total.
+        if fps > 0.0:
+            batch.draw(
+                (DISPLAY_WIDTH - 180, 14),
+                f"FPS {fps:4.1f}", 18, COLOR_TEXT_DIM,
+            )
+
+        # Single PIL round-trip for all text drawn this frame.
+        canvas = batch.flush(canvas)
         return canvas
 
     def _shutdown(self) -> None:
