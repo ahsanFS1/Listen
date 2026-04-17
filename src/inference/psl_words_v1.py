@@ -43,10 +43,30 @@ except Exception as e:
     print(f"[WARN] TTS unavailable: {e}")
 
 # ---------------------------------------------------------------------
+# Database connection
+# ---------------------------------------------------------------------
+try:
+    import psycopg2
+    from dotenv import load_dotenv
+    load_dotenv()
+    
+    db_conn = psycopg2.connect(
+        host=os.getenv("DB_HOST", "localhost"),
+        port=os.getenv("DB_PORT", "5432"),
+        dbname=os.getenv("DB_NAME", "urdu_dict"),
+        user=os.getenv("DB_USER", "postgres"),
+        password=os.getenv("DB_PASSWORD", "12345")
+    )
+    print("[OK] Connected to PostgreSQL dictionary")
+except Exception as e:
+    print(f"[ERROR] Could not connect to PostgreSQL: {e}")
+    db_conn = None
+
+# ---------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------
-MODEL_PATH = "models/psl_words/psl_word_classifier.tflite"
-ENCODER_PATH = "models/psl_words/label_encoder.pkl"
+MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models", "psl_words", "psl_word_classifier.tflite")
+ENCODER_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models", "psl_words", "label_encoder.pkl")
 
 # ---------------------------------------------------------------------
 # Runtime parameters (§4 of plan.md)
@@ -219,13 +239,36 @@ def window_motion(window_raw):
 # Urdu rendering + TTS (lifted from psl-v1.py, simplified)
 # ---------------------------------------------------------------------
 def to_urdu_display(words):
-    """words: list of English class names -> reshaped RTL Urdu string."""
-    urdu = " ".join(PSL_WORD_TO_URDU.get(w, w) for w in words)
+    """words: list of English class names or Urdu strings -> reshaped RTL Urdu string."""
+    parts = []
+    for w in words:
+        parts.append(PSL_WORD_TO_URDU.get(w, w))
+    urdu = " ".join(parts)
     if not urdu:
         return ""
     if ARABIC_SUPPORT:
         return get_display(arabic_reshaper.reshape(urdu))
     return urdu[::-1]
+
+
+def suggest_phrases(full_urdu_text):
+    """Query database for sentences starting with current Urdu text."""
+    if not db_conn or not full_urdu_text:
+        return []
+    
+    # Remove bidi/reshaping if it was applied for display
+    # (Though we usually pass raw Urdu here)
+    try:
+        with db_conn.cursor() as cur:
+            # Simple prefix search
+            query = "SELECT sentence FROM urdu_sentences WHERE sentence LIKE %s LIMIT 5"
+            cur.execute(query, (f"{full_urdu_text}%",))
+            results = cur.fetchall()
+            return [r[0] for r in results]
+    except Exception as e:
+        print(f"DB Error in suggest_phrases: {e}")
+        db_conn.rollback()
+        return []
 
 
 def put_urdu_text(img, text, position, font_size=40, color=(0, 255, 255)):
@@ -235,6 +278,7 @@ def put_urdu_text(img, text, position, font_size=40, color=(0, 255, 255)):
     draw = ImageDraw.Draw(pil)
     font = None
     for candidate in [
+        "C:/Windows/Fonts/ARIALUNI.TTF",
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/tahoma.ttf",
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
@@ -248,6 +292,22 @@ def put_urdu_text(img, text, position, font_size=40, color=(0, 255, 255)):
         font = ImageFont.load_default()
     draw.text(position, text, font=font, fill=(color[2], color[1], color[0]))
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+
+
+def count_raised_fingers(hand_landmarks):
+    """Count extended fingers using tip and PIP joint Y-coordinates."""
+    lm = hand_landmarks.landmark
+    count = 0
+    # 4 Fingers (Tip < PIP)
+    if lm[8].y < lm[6].y: count += 1   # Index
+    if lm[12].y < lm[10].y: count += 1 # Middle
+    if lm[16].y < lm[14].y: count += 1 # Ring
+    if lm[20].y < lm[18].y: count += 1 # Pinky
+    # Thumb (Tip X distance from palm) - depends on hand side, simplified:
+    thumb_dist = abs(lm[4].x - lm[0].x)
+    mcp_dist = abs(lm[2].x - lm[0].x)
+    if thumb_dist > mcp_dist + 0.02: count += 1
+    return count
 
 
 def speak_urdu(word_en):
@@ -381,6 +441,13 @@ def run():
     sentence = []                     # list[str] of committed English classes
     top_label, top_conf = "-", 0.0
     frames_since_predict = 0
+    
+    # Gestural selection state
+    last_finger_count = 0
+    finger_stable_n = 0
+    FINGER_STABLE_REQUIRED = 20  # ~0.6s at 30fps
+    selection_triggered = False
+
     fps_t0 = time.time()
     fps_n = 0
     fps = 0.0
@@ -399,6 +466,22 @@ def run():
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = holistic.process(rgb)
 
+        current_finger_count = 0
+        in_selection_zone = False
+        selection_zone_w = int(w_img * 0.25)
+        selection_zone_x = w_img - selection_zone_w
+
+        # Draw selection zone overlay - User Friendly (On the RIGHT for the user)
+        # We draw on the raw frame, so "Right for user" = "Left for raw" if we flip.
+        overlay_sub = frame.copy()
+        cv2.rectangle(overlay_sub, (0, 0), (selection_zone_w, h_img), (80, 40, 40), -1)
+        frame = cv2.addWeighted(overlay_sub, 0.4, frame, 0.6, 0)
+        cv2.line(frame, (selection_zone_w, 0), (selection_zone_w, h_img), (255, 255, 255), 1)
+        
+        # Icon/Label - will be on right after flip
+        cv2.putText(frame, "SELECTION", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(frame, "ZONE (1-5)", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+
         for hlm in (results.left_hand_landmarks, results.right_hand_landmarks):
             if hlm is not None:
                 mp_draw.draw_landmarks(
@@ -406,6 +489,12 @@ def run():
                     mp_styles.get_default_hand_landmarks_style(),
                     mp_styles.get_default_hand_connections_style(),
                 )
+                # Check if this hand is in selection zone (raw coordinates)
+                wrist_x = hlm.landmark[0].x * w_img
+                # Raw x < selection_zone_w will appear on user's RIGHT after flip
+                if wrist_x < selection_zone_w:
+                    in_selection_zone = True
+                    current_finger_count = count_raised_fingers(hlm)
 
         frame = cv2.flip(frame, 1)
 
@@ -441,6 +530,34 @@ def run():
             print(f"+ {committed}  ->  {' '.join(sentence)}")
             speak_urdu(committed)
 
+        # 2.5 Gestural selection logic
+        key_to_trigger = None
+        if in_selection_zone and current_finger_count > 0:
+            if current_finger_count == last_finger_count:
+                finger_stable_n += 1
+            else:
+                finger_stable_n = 0
+                last_finger_count = current_finger_count
+            
+            # Modern Progress Bar - will be on user's right (0 to selection_zone_w)
+            bar_h = int((finger_stable_n / FINGER_STABLE_REQUIRED) * (h_img - 200))
+            cv2.rectangle(frame, (20, h_img - 150), 
+                          (5, h_img - 150 - bar_h), (0, 255, 127), -1)
+            cv2.rectangle(frame, (20, h_img - 150), 
+                          (5, 150), (255, 255, 255), 1)
+            
+            # Big finger count indicator
+            cv2.putText(frame, str(current_finger_count), (selection_zone_w // 2 - 30, h_img // 2), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 3.0, (0, 255, 127), 4)
+            cv2.putText(frame, "HOLDING", (selection_zone_w // 2 - 45, h_img // 2 + 50), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+            if finger_stable_n >= FINGER_STABLE_REQUIRED:
+                key_to_trigger = ord(str(current_finger_count))
+                finger_stable_n = -15  # Cooldown
+        else:
+            finger_stable_n = 0
+
         # 3. Draw text overlay on top of the (already flipped) frame
         overlay = frame.copy()
         cv2.rectangle(overlay, (0, 0), (w_img, 260), (0, 0, 0), -1)
@@ -458,11 +575,27 @@ def run():
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2, cv2.LINE_AA)
 
         urdu_text = to_urdu_display(sentence)
+        raw_urdu = " ".join(PSL_WORD_TO_URDU.get(w, w) for w in sentence)
+        
         if urdu_text:
             cv2.putText(frame, "Urdu:", (20, 180),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
             frame = put_urdu_text(frame, urdu_text, (20, 200), font_size=44,
                                   color=(0, 255, 255))
+
+        # 4. Suggestions from DB
+        suggestions = suggest_phrases(raw_urdu)
+        if suggestions:
+            cv2.putText(frame, "Suggestions (1-5):", (20, 280),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2, cv2.LINE_AA)
+            for i, sug in enumerate(suggestions):
+                y_pos = 320 + (i * 45)
+                # Show index
+                cv2.putText(frame, f"[{i+1}]", (20, y_pos),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                # Show Urdu suggestion
+                sug_disp = get_display(arabic_reshaper.reshape(sug)) if ARABIC_SUPPORT else sug[::-1]
+                frame = put_urdu_text(frame, sug_disp, (70, y_pos - 32), font_size=32, color=(0, 255, 127))
 
         # Buffer fill + FPS indicator
         fill = min(1.0, len(norm_buf) / T)
@@ -484,26 +617,66 @@ def run():
                     (100, 255, 100), 2)
 
         cv2.putText(frame,
-                    "q:quit  c:clear  s:speak sentence  space:speak last",
+                    "q:quit  c/r:clear  s:speak  backspace:undo  space:speak last",
                     (20, h_img - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                     (200, 200, 200), 1)
 
         cv2.imshow("Listen - PSL Words", frame)
 
         key = cv2.waitKey(1) & 0xFF
+        if key_to_trigger:
+            key = key_to_trigger
+            
         if key == ord('q'):
             break
-        elif key == ord('c'):
+        elif key == ord('c') or key == ord('r'):
             sentence = []
             print("Sentence cleared.")
+        elif key == 8:  # Backspace
+            if sentence:
+                removed = sentence.pop()
+                print(f"Removed: {removed}. Current sentence: {' '.join(sentence)}")
         elif key == ord('s'):
             if sentence:
-                # Speak the whole sentence by pronouncing each word in sequence
-                for w in sentence:
-                    speak_urdu(w)
+                # Speak the whole sentence
+                full_text = " ".join(PSL_WORD_TO_URDU.get(w, w) for w in sentence)
+                speak_urdu(full_text)
         elif key == ord(' '):
             if sentence:
                 speak_urdu(sentence[-1])
+        elif key in [ord('1'), ord('2'), ord('3'), ord('4'), ord('5')]:
+            idx = int(chr(key)) - 1
+            if suggestions and idx < len(suggestions):
+                selected_sentence = suggestions[idx]
+                print(f"Selected: {selected_sentence}")
+                # Replace current sentence with the words from the suggestion
+                # Since we don't have a reverse mapping easily for phrases to classes,
+                # we'll just store the Urdu string as a single item and treat it carefully.
+                # BETTER: Just clear sentence and put the selected words in it as Urdu values.
+                sentence = [selected_sentence] 
+                
+                if TTS_SUPPORT:
+                    def speak_full():
+                        try:
+                            async def gen():
+                                comm = edge_tts.Communicate(selected_sentence, VOICE, rate="-20%")
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
+                                    path = fp.name
+                                await comm.save(path)
+                                return path
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            path = loop.run_until_complete(gen())
+                            loop.close()
+                            pygame.mixer.music.load(path)
+                            pygame.mixer.music.play()
+                            while pygame.mixer.music.get_busy():
+                                pygame.time.Clock().tick(10)
+                            pygame.mixer.music.unload()
+                            os.remove(path)
+                        except Exception as ex:
+                            print(f"[TTS Full] {ex}")
+                    threading.Thread(target=speak_full, daemon=True).start()
 
     cap.release()
     cv2.destroyAllWindows()
