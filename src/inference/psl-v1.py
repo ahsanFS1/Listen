@@ -53,9 +53,10 @@ except Exception as e:
 # ---------------------------------------------------------------------
 # ⚙️ Configuration
 # ---------------------------------------------------------------------
-MODEL_PATH = "models/psl/psl_landmark_classifier.tflite"
-ENCODER_PATH = "models/psl/label_encoder.pkl"
-SCALER_PATH = "models/psl/scaler.pkl"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "psl", "psl_landmark_classifier.tflite")
+ENCODER_PATH = os.path.join(PROJECT_ROOT, "models", "psl", "label_encoder.pkl")
+SCALER_PATH = os.path.join(PROJECT_ROOT, "models", "psl", "scaler.pkl")
 
 # Load model, encoder, and scaler
 print("Loading PSL model and encoders...")
