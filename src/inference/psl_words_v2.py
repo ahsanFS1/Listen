@@ -310,6 +310,81 @@ def speak_word_async(english_word: str) -> None:
 
 
 # =====================================================================
+# Hands → Holistic adapter (accuracy-test swap)
+# =====================================================================
+# The model was trained on data extracted with MediaPipe Holistic, which
+# returns `left_hand_landmarks` / `right_hand_landmarks` keyed to the
+# signer's ANATOMICAL sides. MediaPipe Hands returns an unordered list
+# plus a "Left"/"Right" handedness label from its classifier, which is
+# trained to expect selfie-FLIPPED input. We feed the raw (non-flipped)
+# processing frame, so the classifier's label is inverted relative to
+# anatomy — a "Right" label means the anatomical left hand. Flip
+# `HANDS_INVERT_HANDEDNESS` to False if you pre-flip the frame.
+HANDS_INVERT_HANDEDNESS: bool = True
+
+
+class _HandsToHolistic:
+    """Expose mp.solutions.hands results as Holistic-style attributes."""
+
+    __slots__ = ("left_hand_landmarks", "right_hand_landmarks")
+
+    def __init__(self, hands_results) -> None:
+        self.left_hand_landmarks = None
+        self.right_hand_landmarks = None
+        mhl = getattr(hands_results, "multi_hand_landmarks", None)
+        if not mhl:
+            return
+        mhd = getattr(hands_results, "multi_handedness", None) or []
+        for lm, hd in zip(mhl, mhd):
+            label = hd.classification[0].label
+            if HANDS_INVERT_HANDEDNESS:
+                is_anatomical_left = (label == "Right")
+            else:
+                is_anatomical_left = (label == "Left")
+            if is_anatomical_left:
+                if self.left_hand_landmarks is None:
+                    self.left_hand_landmarks = lm
+            else:
+                if self.right_hand_landmarks is None:
+                    self.right_hand_landmarks = lm
+
+
+# =====================================================================
+# Fast hand-landmark drawer (replaces mp.solutions.drawing_utils)
+# =====================================================================
+# mp_drawing_utils.draw_landmarks does 42 individual cv2.circle calls
+# and builds python lists on every call. We batch into a single
+# cv2.polylines for the bones and cheap circles for the joints — 3-5ms
+# saved per frame on a 640×360 canvas.
+_HAND_BONES: Tuple[Tuple[int, int], ...] = (
+    (0, 1), (1, 2), (2, 3), (3, 4),          # thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),          # index
+    (5, 9), (9, 10), (10, 11), (11, 12),     # middle
+    (9, 13), (13, 14), (14, 15), (15, 16),   # ring
+    (13, 17), (17, 18), (18, 19), (19, 20),  # pinky
+    (0, 17),                                  # palm
+)
+_BONE_COLOR: Tuple[int, int, int] = (255, 255, 255)
+_POINT_COLOR: Tuple[int, int, int] = (0, 200, 255)
+
+
+def draw_hand_fast(img: np.ndarray, landmarks) -> None:
+    """Render one hand's 21 landmarks into `img` in-place."""
+    h, w = img.shape[:2]
+    lm = landmarks.landmark
+    pts = np.empty((21, 2), dtype=np.int32)
+    for i in range(21):
+        p = lm[i]
+        pts[i, 0] = int(p.x * w)
+        pts[i, 1] = int(p.y * h)
+    segs = [pts[[a, b]].reshape(-1, 1, 2) for a, b in _HAND_BONES]
+    cv2.polylines(img, segs, False, _BONE_COLOR, 2, cv2.LINE_AA)
+    for i in range(21):
+        cv2.circle(img, (int(pts[i, 0]), int(pts[i, 1])), 3,
+                   _POINT_COLOR, -1, cv2.LINE_AA)
+
+
+# =====================================================================
 # Landmark helpers (PROTECTED — identical math to v1)
 # =====================================================================
 def frame_from_mediapipe(results) -> np.ndarray:
@@ -654,6 +729,48 @@ class InferenceResult:
     timestamp: float
 
 
+class CameraReader(threading.Thread):
+    """Daemon thread that continuously pulls frames from cv2.VideoCapture.
+
+    `cap.read()` blocks until the next frame is ready, so running it on
+    the main loop caps our FPS at the camera's capture rate (often 30).
+    By pulling frames on a background thread and only keeping the latest
+    one, the main loop never waits on I/O — at the cost of sometimes
+    skipping a frame if processing is slower than capture.
+    """
+
+    def __init__(self, cap: cv2.VideoCapture,
+                 stop_event: threading.Event) -> None:
+        super().__init__(daemon=True, name="PSL-CameraReader")
+        self._cap = cap
+        self._stop_evt = stop_event
+        self._lock = threading.Lock()
+        self._frame: Optional[np.ndarray] = None
+        self._frame_id: int = 0
+        self._last_returned_id: int = -1
+
+    def run(self) -> None:
+        while not self._stop_evt.is_set():
+            ok, frame = self._cap.read()
+            if not ok or frame is None:
+                time.sleep(0.005)
+                continue
+            with self._lock:
+                self._frame = frame
+                self._frame_id += 1
+
+    def read(self, timeout: float = 1.0) -> Tuple[bool, Optional[np.ndarray]]:
+        """Return the newest frame; blocks briefly until one arrives."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self._lock:
+                if self._frame is not None and self._frame_id != self._last_returned_id:
+                    self._last_returned_id = self._frame_id
+                    return True, self._frame
+            time.sleep(0.001)
+        return False, None
+
+
 class InferenceWorker(threading.Thread):
     """Daemon thread that consumes normalized windows and emits predictions."""
 
@@ -812,7 +929,8 @@ class ListenApp:
     def __init__(self) -> None:
         """Create all state; no heavy resources loaded yet."""
         self.cap: Optional[cv2.VideoCapture] = None
-        self.holistic = None
+        self._camera: Optional[CameraReader] = None
+        self.hands = None
         self.interpreter = None
         self.in_det = None
         self.out_det = None
@@ -953,6 +1071,9 @@ class ListenApp:
                 raise RuntimeError("Camera index 0 could not be opened.")
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_WIDTH)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_HEIGHT)
+            # Start the async reader so the main loop never blocks on I/O.
+            self._camera = CameraReader(self.cap, self._stop_event)
+            self._camera.start()
             stages[0].done = True
         except Exception as e:
             stages[0].failed = True
@@ -966,10 +1087,11 @@ class ListenApp:
         # Stage 1: MediaPipe (PROTECTED)
         paint(1)
         try:
-            mp_hol = mp.solutions.holistic
-            self.holistic = mp_hol.Holistic(
+            mp_hands_mod = mp.solutions.hands
+            self.hands = mp_hands_mod.Hands(
                 static_image_mode=False,
-                model_complexity=1,
+                max_num_hands=2,
+                model_complexity=0,
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5,
             )
@@ -1295,7 +1417,8 @@ class ListenApp:
     def run(self) -> None:
         """Main capture + render loop."""
         cv2.setMouseCallback(WINDOW_TITLE, self._on_mouse)
-        assert self.cap is not None and self.holistic is not None
+        assert self.cap is not None and self.hands is not None
+        assert self._camera is not None
 
         proc_frame_bgr = np.zeros(
             (PROC_HEIGHT, PROC_WIDTH, 3), dtype=np.uint8,
@@ -1303,6 +1426,10 @@ class ListenApp:
         fps_t0 = time.time()
         fps_n = 0
         fps = 0.0
+        # Per-stage timing accumulators (ms). Reset every 60 frames.
+        t_cam = t_mp = t_logic = t_compose = t_show = 0.0
+        probe_n = 0
+        perf = time.perf_counter
         print(f"[{datetime.now().strftime('%H:%M:%S')}] App started.")
 
         while not self._stop_event.is_set():
@@ -1313,11 +1440,13 @@ class ListenApp:
                 self._update_suggestions(urdu_sentence)
                 self._last_suggestion_query = urdu_sentence
 
-            ok, frame_bgr = self.cap.read()
-            if not ok:
-                time.sleep(0.01)
+            _ts = perf()
+            ok, frame_bgr = self._camera.read()
+            if not ok or frame_bgr is None:
                 continue
+            t_cam += (perf() - _ts) * 1000.0
 
+            _ts = perf()
             # Downscale to processing resolution
             cv2.resize(
                 frame_bgr, (PROC_WIDTH, PROC_HEIGHT), dst=proc_frame_bgr,
@@ -1327,7 +1456,9 @@ class ListenApp:
             # every frame.
             cv2.cvtColor(proc_frame_bgr, cv2.COLOR_BGR2RGB,
                          dst=self._proc_rgb_buf)
-            results = self.holistic.process(self._proc_rgb_buf)
+            results = _HandsToHolistic(self.hands.process(self._proc_rgb_buf))
+            t_mp += (perf() - _ts) * 1000.0
+            _ts = perf()
 
             has_left = results.left_hand_landmarks is not None
             has_right = results.right_hand_landmarks is not None
@@ -1428,11 +1559,32 @@ class ListenApp:
                 fps_t0 = time.time()
                 fps_n = 0
 
-            # Compose final canvas
-            canvas = self._compose(proc_frame_bgr, has_hands, fps=fps)
+            t_logic += (perf() - _ts) * 1000.0
 
+            # Compose final canvas
+            _ts = perf()
+            canvas = self._compose(proc_frame_bgr, has_hands, fps=fps)
+            t_compose += (perf() - _ts) * 1000.0
+
+            _ts = perf()
             cv2.imshow(WINDOW_TITLE, canvas)
             key = cv2.waitKey(1) & 0xFF
+            t_show += (perf() - _ts) * 1000.0
+
+            probe_n += 1
+            if probe_n >= 60:
+                print(
+                    f"[perf] cam={t_cam/probe_n:.1f}ms "
+                    f"mp={t_mp/probe_n:.1f}ms "
+                    f"logic={t_logic/probe_n:.1f}ms "
+                    f"compose={t_compose/probe_n:.1f}ms "
+                    f"show={t_show/probe_n:.1f}ms "
+                    f"fps={fps:.1f}",
+                    flush=True,
+                )
+                t_cam = t_mp = t_logic = t_compose = t_show = 0.0
+                probe_n = 0
+
             if key in (ord('q'), 27):
                 self._stop_event.set()
                 break
@@ -1442,13 +1594,9 @@ class ListenApp:
     # ------------------------- landmarks -----------------------------
     def _draw_landmarks(self, proc_bgr: np.ndarray, results) -> None:
         """Overlay hand landmarks in place on the processing-res frame."""
-        draw_fn = self._mp_draw.draw_landmarks
-        conns = self._mp_hand_connections
-        lm_style = self._mp_landmarks_style
-        conn_style = self._mp_connections_style
         for hlm in (results.left_hand_landmarks, results.right_hand_landmarks):
             if hlm is not None:
-                draw_fn(proc_bgr, hlm, conns, lm_style, conn_style)
+                draw_hand_fast(proc_bgr, hlm)
 
     def _draw_cam_btn(self, canvas: np.ndarray, name: str,
                       color: Tuple[int, int, int]) -> None:
@@ -1771,14 +1919,16 @@ class ListenApp:
     def _shutdown(self) -> None:
         """Release resources, stop threads, and cleanup."""
         self._stop_event.set()
+        if self._camera is not None:
+            self._camera.join(timeout=1.0)
         try:
             if self.cap is not None:
                 self.cap.release()
         except Exception:
             pass
         try:
-            if self.holistic is not None:
-                self.holistic.close()
+            if self.hands is not None:
+                self.hands.close()
         except Exception:
             pass
         try:
