@@ -1,8 +1,0 @@
-# Listen - PSL session log
-# Saved: 2026-04-17T22:42:58.930696
-# Threshold at exit: 70%
-#
-2026-04-17T22:41:34	assalam-o-alaikum	السلام علیکم
-2026-04-17T22:41:51	SUGGESTION:السلام علیکم، آپ کیسے ہیں؟	
-2026-04-17T22:42:14	fan	پنکھا
-2026-04-17T22:42:28	sunglasses	دھوپ کے چشمے

@@ -1,5 +1,0 @@
-# Listen - PSL session log
-# Saved: 2026-04-17T20:49:16.701141
-# Threshold at exit: 74%
-#
-2026-04-17T20:49:14	assalam-o-alaikum	السلام علیکم

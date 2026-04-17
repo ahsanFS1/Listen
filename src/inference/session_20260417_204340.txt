@@ -1,5 +1,0 @@
-# Listen - PSL session log
-# Saved: 2026-04-17T20:43:40.535370
-# Threshold at exit: 70%
-#
-2026-04-17T20:43:17	left_hand	بایاں ہاتھ
