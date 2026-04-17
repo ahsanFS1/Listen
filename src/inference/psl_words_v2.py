@@ -542,10 +542,24 @@ class _TextBatch:
 def filled_panel(img: np.ndarray, x0: int, y0: int, x1: int, y1: int,
                  color: Tuple[int, int, int] = COLOR_PANEL,
                  alpha: float = PANEL_ALPHA) -> np.ndarray:
-    """Draw a semi-transparent filled panel in-place and return the image."""
-    overlay = img.copy()
-    cv2.rectangle(overlay, (x0, y0), (x1, y1), color, -1)
-    cv2.addWeighted(overlay, alpha, img, 1.0 - alpha, 0.0, dst=img)
+    """Draw a semi-transparent filled panel in-place and return the image.
+
+    Only the rectangle region is copied + blended (not the whole canvas),
+    which keeps the per-call cost proportional to panel area instead of
+    frame area. For the large right panel this is ~4x cheaper.
+    """
+    # Clamp coords to image bounds so slicing is safe.
+    h, w = img.shape[:2]
+    x0c = max(0, min(w, x0))
+    y0c = max(0, min(h, y0))
+    x1c = max(0, min(w, x1))
+    y1c = max(0, min(h, y1))
+    if x1c <= x0c or y1c <= y0c:
+        return img
+    region = img[y0c:y1c, x0c:x1c]
+    fill = np.empty_like(region)
+    fill[:] = color
+    cv2.addWeighted(fill, alpha, region, 1.0 - alpha, 0.0, dst=region)
     return img
 
 
@@ -878,6 +892,30 @@ class ListenApp:
         self.HOVER_TRIGGER = 0.2
         self.suggestions_are_fallback: bool = False
 
+        # Reusable canvas + image buffers so we don't re-allocate 3.5 MB
+        # every frame. `_canvas_buf` is filled with BG at the top of each
+        # compose; `_cam_big_buf` is (re)allocated only when geometry
+        # changes; `_proc_rgb_buf` caches the BGR->RGB conversion target.
+        self._canvas_buf: np.ndarray = np.full(
+            (DISPLAY_HEIGHT, DISPLAY_WIDTH, 3), COLOR_BG, dtype=np.uint8,
+        )
+        self._cam_big_buf: Optional[np.ndarray] = None
+        self._proc_rgb_buf: np.ndarray = np.empty(
+            (PROC_HEIGHT, PROC_WIDTH, 3), dtype=np.uint8,
+        )
+
+        # Cache the Urdu caption so we don't rebuild it every frame while
+        # the sentence hasn't changed.
+        self._history_cache_key: Tuple[str, ...] = ()
+        self._history_urdu_cache: str = ""
+
+        # Cache MediaPipe drawing helpers (imported once at startup
+        # instead of looked up through mp.solutions.* every frame).
+        self._mp_hand_connections = None
+        self._mp_draw = None
+        self._mp_landmarks_style = None
+        self._mp_connections_style = None
+
     # ------------------------- startup -------------------------------
     def _init_stages(self) -> List[LoadStage]:
         """Return the ordered list of startup stages."""
@@ -934,6 +972,18 @@ class ListenApp:
                 model_complexity=1,
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5,
+            )
+            # Resolve drawing helpers ONCE; looking these up through
+            # `mp.solutions.*` is surprisingly expensive per call.
+            self._mp_hand_connections = (
+                mp.solutions.hands.HAND_CONNECTIONS
+            )
+            self._mp_draw = mp.solutions.drawing_utils
+            self._mp_landmarks_style = (
+                mp.solutions.drawing_styles.get_default_hand_landmarks_style()
+            )
+            self._mp_connections_style = (
+                mp.solutions.drawing_styles.get_default_hand_connections_style()
             )
             stages[1].done = True
         except Exception as e:
@@ -1218,6 +1268,17 @@ class ListenApp:
         speak_text_async(selected_sentence)
         self._enter_state(SignState.COOLDOWN)
 
+    # ------------------------- cached sentence -----------------------
+    def _get_urdu_sentence(self) -> str:
+        """Return the running Urdu caption; rebuilds only on history change."""
+        key = tuple(self.history)
+        if key != self._history_cache_key:
+            self._history_cache_key = key
+            self._history_urdu_cache = " ".join(
+                PSL_WORD_TO_URDU.get(w, w) for w in self.history
+            )
+        return self._history_urdu_cache
+
     # ------------------------- commit --------------------------------
     def _commit_word(self, english_word: str) -> None:
         """Append a word, fire TTS, and lock into COMMITTED state."""
@@ -1245,13 +1306,12 @@ class ListenApp:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] App started.")
 
         while not self._stop_event.is_set():
-            # Trigger DB suggestion refresh if the committed sentence changed
-            current_sentence = " ".join(
-                PSL_WORD_TO_URDU.get(w, w) for w in self.history
-            )
-            if current_sentence != self._last_suggestion_query:
-                self._update_suggestions(current_sentence)
-                self._last_suggestion_query = current_sentence
+            # Trigger DB suggestion refresh only if history actually changed
+            # (avoids rebuilding the Urdu sentence string every frame).
+            urdu_sentence = self._get_urdu_sentence()
+            if urdu_sentence != self._last_suggestion_query:
+                self._update_suggestions(urdu_sentence)
+                self._last_suggestion_query = urdu_sentence
 
             ok, frame_bgr = self.cap.read()
             if not ok:
@@ -1263,8 +1323,11 @@ class ListenApp:
                 frame_bgr, (PROC_WIDTH, PROC_HEIGHT), dst=proc_frame_bgr,
                 interpolation=cv2.INTER_LINEAR,
             )
-            proc_rgb = cv2.cvtColor(proc_frame_bgr, cv2.COLOR_BGR2RGB)
-            results = self.holistic.process(proc_rgb)
+            # Reuse the preallocated RGB buffer instead of allocating one
+            # every frame.
+            cv2.cvtColor(proc_frame_bgr, cv2.COLOR_BGR2RGB,
+                         dst=self._proc_rgb_buf)
+            results = self.holistic.process(self._proc_rgb_buf)
 
             has_left = results.left_hand_landmarks is not None
             has_right = results.right_hand_landmarks is not None
@@ -1379,16 +1442,13 @@ class ListenApp:
     # ------------------------- landmarks -----------------------------
     def _draw_landmarks(self, proc_bgr: np.ndarray, results) -> None:
         """Overlay hand landmarks in place on the processing-res frame."""
-        mp_hands_sol = mp.solutions.hands
-        mp_draw = mp.solutions.drawing_utils
-        mp_styles = mp.solutions.drawing_styles
+        draw_fn = self._mp_draw.draw_landmarks
+        conns = self._mp_hand_connections
+        lm_style = self._mp_landmarks_style
+        conn_style = self._mp_connections_style
         for hlm in (results.left_hand_landmarks, results.right_hand_landmarks):
             if hlm is not None:
-                mp_draw.draw_landmarks(
-                    proc_bgr, hlm, mp_hands_sol.HAND_CONNECTIONS,
-                    mp_styles.get_default_hand_landmarks_style(),
-                    mp_styles.get_default_hand_connections_style(),
-                )
+                draw_fn(proc_bgr, hlm, conns, lm_style, conn_style)
 
     def _draw_cam_btn(self, canvas: np.ndarray, name: str,
                       color: Tuple[int, int, int]) -> None:
@@ -1432,9 +1492,7 @@ class ListenApp:
             self.history.clear()
         elif name == "SPEAK":
             if self.history:
-                text = " ".join(PSL_WORD_TO_URDU.get(w, w)
-                                for w in self.history)
-                speak_text_async(text)
+                speak_text_async(self._get_urdu_sentence())
         elif name == "UNDO":
             if self.history:
                 self.history.pop()
@@ -1443,9 +1501,10 @@ class ListenApp:
     def _compose(self, proc_bgr: np.ndarray, has_hands: bool,
                  fps: float = 0.0) -> np.ndarray:
         """Build and return the full two-panel UI frame for this tick."""
-        canvas = np.full(
-            (DISPLAY_HEIGHT, DISPLAY_WIDTH, 3), COLOR_BG, dtype=np.uint8,
-        )
+        # Reuse the same canvas buffer every frame; fill() is faster than
+        # allocating a fresh (1440*810*3)-byte array each tick.
+        canvas = self._canvas_buf
+        canvas[:] = COLOR_BG
         batch = _TextBatch()
 
         # Panel geometry
@@ -1466,9 +1525,19 @@ class ListenApp:
         if self.state is SignState.IDLE and not has_hands:
             proc_draw = overlay_silhouette(proc_bgr, self._silhouette)
 
-        cam_big = cv2.resize(proc_draw, (cam_area_w, cam_area_h))
-        cam_big = cv2.flip(cam_big, 1)
-        canvas[cam_y0:cam_y1, cam_x0:cam_x1] = cam_big
+        # Reuse a single cam_big buffer; re-alloc only if geometry changes
+        # (which happens at most once after startup).
+        if (self._cam_big_buf is None
+                or self._cam_big_buf.shape[0] != cam_area_h
+                or self._cam_big_buf.shape[1] != cam_area_w):
+            self._cam_big_buf = np.empty(
+                (cam_area_h, cam_area_w, 3), dtype=np.uint8,
+            )
+        cv2.resize(proc_draw, (cam_area_w, cam_area_h),
+                   dst=self._cam_big_buf,
+                   interpolation=cv2.INTER_LINEAR)
+        cv2.flip(self._cam_big_buf, 1, dst=self._cam_big_buf)
+        canvas[cam_y0:cam_y1, cam_x0:cam_x1] = self._cam_big_buf
 
         # Camera border + label
         cv2.rectangle(canvas, (cam_x0 - 4, cam_y0 - 4),
@@ -1534,9 +1603,7 @@ class ListenApp:
         filled_panel(canvas, cam_x0, cap_y0, cam_x1, cap_y1,
                      COLOR_PANEL, 0.55)
         # The caption is the running sentence in Urdu, wrapped RTL.
-        urdu_sentence = " ".join(
-            PSL_WORD_TO_URDU.get(w, w) for w in self.history
-        )
+        urdu_sentence = self._get_urdu_sentence()
         if urdu_sentence:
             batch.wrap(
                 right_x=cam_x1 - 18,
