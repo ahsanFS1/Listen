@@ -45,8 +45,8 @@ except Exception as e:
 # ---------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------
-MODEL_PATH = "models/psl_words/psl_word_classifier.tflite"
-ENCODER_PATH = "models/psl_words/label_encoder.pkl"
+MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models", "psl_words", "psl_word_classifier.tflite")
+ENCODER_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models", "psl_words", "label_encoder.pkl")
 
 # ---------------------------------------------------------------------
 # Runtime parameters (§4 of plan.md)
