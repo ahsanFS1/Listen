@@ -1,0 +1,57 @@
+{
+  "expo": {
+    "name": "Listen",
+    "slug": "listen-psl",
+    "version": "1.0.0",
+    "scheme": "listen",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B1020"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.listen.psl",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Listen uses the camera to recognize Pakistani Sign Language gestures in real time.",
+        "NSMicrophoneUsageDescription": "Listen may use the microphone for future voice features.",
+        "NSSpeechRecognitionUsageDescription": "Listen uses speech for Urdu text-to-speech output."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0B1020"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.listen.psl",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Listen to access the camera for PSL recognition."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "assetBundlePatterns": ["**/*"]
+  }
+}
