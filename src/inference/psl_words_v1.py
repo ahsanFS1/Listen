@@ -278,9 +278,15 @@ def put_urdu_text(img, text, position, font_size=40, color=(0, 255, 255)):
     draw = ImageDraw.Draw(pil)
     font = None
     for candidate in [
+        # Linux — available Noto Arabic/Urdu fonts
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNastaliqUrdu-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+        # Windows
         "C:/Windows/Fonts/ARIALUNI.TTF",
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/tahoma.ttf",
+        # macOS
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
     ]:
         try:

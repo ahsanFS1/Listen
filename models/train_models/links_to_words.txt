@@ -1,0 +1,95 @@
+Detected on mobile: 
+1. you: https://psl.org.pk/dictionary/63-pronouns/4124-you
+2. dog: https://psl.org.pk/dictionary/51-mammals/2861-dog (But close hands a little bit when signing) 
+3. fan: https://psl.org.pk/dictionary/10-around-the-house/415-fan (Only baseline detects)
+4. assalamualaikum: https://psl.org.pk/dictionary/65-sentences/4268-assalam-o-alaikum 
+6. water: https://psl.org.pk/dictionary/31-drinks/7070-water    
+7. we: https://psl.org.pk/dictionary/63-pronouns/4123-we 
+8. all: https://psl.org.pk/dictionary/63-pronouns/4092-all 
+9. both: https://psl.org.pk/dictionary/63-pronouns/4096-both 
+10. aircrash: https://psl.org.pk/dictionary/3-airport/161-air-crash 
+11. welldone: https://psl.org.pk/dictionary/65-sentences/4381-well-done! 
+12. ihaveacomplaint: https://psl.org.pk/dictionary/81-kfc/6741-i-have-an-complaint 
+13. bear: https://psl.org.pk/dictionary/51-mammals/2847-bear 
+14. chimpanzee: https://psl.org.pk/dictionary/51-mammals/2854-chimpanzee 
+15. elephant: https://psl.org.pk/dictionary/51-mammals/2863-elephant (Do in a regular rather fast manner)
+16. policecar: https://psl.org.pk/dictionary/70-transport/4706-police-car (Do in a regular rather fast manner)
+17. bicycle: https://psl.org.pk/dictionary/70-transport/4644-bicycle 
+18. bridge: https://psl.org.pk/dictionary/70-transport/4646-bridge (Do from a bit distance)
+19. cartoon: https://psl.org.pk/dictionary/11-arts/435-cartoon 
+20. nailcutter: https://psl.org.pk/dictionary/13-bathroom/560-nail-cutter 
+21. sunglasses: https://psl.org.pk/dictionary/14-beach/623-sunglasses (Do from a bit distance)
+22. beach: https://psl.org.pk/dictionary/14-beach/609-beach
+23. lifejacket: https://psl.org.pk/dictionary/14-beach/612-life-jacket (Do slowly)
+24. beard: https://psl.org.pk/dictionary/15-beauty/633-beard (Do from a bit distance)
+25. facelotion: https://psl.org.pk/dictionary/15-beauty/650-face-lotion (29. Detects)
+26. beak: https://psl.org.pk/dictionary/17-birds/739-beak (X)
+27. crow: https://psl.org.pk/dictionary/17-birds/742-crow (X)
+28. bulb: https://psl.org.pk/dictionary/9-appliances/293-light-bulb
+
+1. hi/hello: https://psl.org.pk/dictionary/65-sentences/4309-hello (1. Detects)
+3. thankyou: https://psl.org.pk/dictionary/65-sentences/4369-thank-you (X)
+4. goodbye: https://psl.org.pk/dictionary/65-sentences/4305-goodbye (3. Detects)
+5. excuseme: https://psl.org.pk/dictionary/65-sentences/4299-excuse-me (X)
+7. bring: https://psl.org.pk/dictionary/72-verbs/4871-bring (4. Detects)
+8. airplane: https://psl.org.pk/dictionary/3-airport/162-airplane (X)
+9. donttouch: https://psl.org.pk/dictionary/65-sentences/4297-don-t-touch ! (X)
+11. bench: https://psl.org.pk/dictionary/10-around-the-house/406-bench (X)
+12. haveagoodday: https://psl.org.pk/dictionary/81-kfc/6740-have-a-good-day! (Detects on augmented only)
+15. door: https://psl.org.pk/dictionary/10-around-the-house/412-door (6. Detects)
+16. garden: https://psl.org.pk/dictionary/10-around-the-house/421-garden (X)
+17. mine: https://psl.org.pk/dictionary/63-pronouns/4106-mine (X) Detects both
+18. absolutely: https://psl.org.pk/dictionary/2-adverbs/209-absolutely (X) Detects fan
+21. mobilephone: https://psl.org.pk/dictionary/9-appliances/296-mobile-phone (9. Detects)
+22. generator: https://psl.org.pk/dictionary/9-appliances/292-generator (10. Detects only on augmented)
+24. goodmorning: https://psl.org.pk/dictionary/65-sentences/4303-good-morning (12. Detects)
+28. cow: https://psl.org.pk/dictionary/51-mammals/2857-cow (16. Detects)
+29. deer: https://psl.org.pk/dictionary/51-mammals/2859-deer (X)
+37. coloredpencils: https://psl.org.pk/dictionary/11-arts/439-colored-pencils (X)
+38. atm: https://psl.org.pk/dictionary/12-banking/576-atm-automated-teller-machine (22. Detects, do first part slowly)
+40. shampoo: https://psl.org.pk/dictionary/13-bathroom/564-shampoo (24. Detects but a bit late to detect)
+41. razor: https://psl.org.pk/dictionary/13-bathroom/563-razor (X)
+42. shower: https://psl.org.pk/dictionary/13-bathroom/565-shower (Detects on augmented only)
+43. tissuepaper: https://psl.org.pk/dictionary/13-bathroom/569-tissue-paper (25.Detects)
+44. toothbrush: https://psl.org.pk/dictionary/13-bathroom/572-toothbrush (26. Detects)
+45. toothpaste: https://psl.org.pk/dictionary/13-bathroom/573-toothpaste (27. Detects)
+49. bald: https://psl.org.pk/dictionary/15-beauty/631-bald (X)
+52. also: https://psl.org.pk/dictionary/2-adverbs/212-also (X)
+53. bed: https://psl.org.pk/dictionary/16-bedroom/717-bed (X)
+54. cupboard: https://psl.org.pk/dictionary/16-bedroom/725-cupboard (X)
+57. peacock: https://psl.org.pk/dictionary/17-birds/761-peacock (30. Detects)
+58. arrival: https://psl.org.pk/dictionary/3-airport/163-arrival (X)
+59. umbrella: https://psl.org.pk/dictionary/14-beach/628-umbrella (31. Detects)
+
+
+
+
+https://psl.org.pk/dictionary/16-bedroom/718-bedroom
+https://psl.org.pk/dictionary/17-birds/763-penguin
+https://psl.org.pk/dictionary/3-airport/171-conveyor-belt
+https://psl.org.pk/dictionary/14-beach/627-tide
+
+14. goodnight: https://psl.org.pk/dictionary/65-sentences/4304-good-night
+
+
+
+13. goaway: https://psl.org.pk/dictionary/65-sentences/4300-go-away!
+14. goodafternoon: https://psl.org.pk/dictionary/65-sentences/4301-good-afternoon
+
+17. seeyoulater: https://psl.org.pk/dictionary/65-sentences/4365-see-you-later!
+18. walaikumassalam: https://psl.org.pk/dictionary/65-sentences/4379-walaikum-as-salaam
+19. welcome: https://psl.org.pk/dictionary/65-sentences/4380-welcome
+
+
+
+23. comehere: https://psl.org.pk/dictionary/65-sentences/4276-come-here!
+
+
+27. also: https://psl.org.pk/dictionary/2-adverbs/212-also
+
+
+
+31. 
+
+
+10. please: https://psl.org.pk/dictionary/65-sentences/4364-please (very similar to excuseme)

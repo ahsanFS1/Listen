@@ -276,18 +276,25 @@ def put_urdu_text(img, text, position, font_size=40, color=(0, 255, 255)):
     
     # Try Windows fonts first, then macOS fallbacks
     font_paths = [
-        "C:/Windows/Fonts/ARIALUNI.TTF",     # Arial Unicode MS (Windows)
-        "C:/Windows/Fonts/arial.ttf",         # Arial (Windows)
-        "C:/Windows/Fonts/segoeui.ttf",       # Segoe UI (Windows, supports Arabic/Urdu)
-        "C:/Windows/Fonts/tahoma.ttf",        # Tahoma (Windows)
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",  # macOS
-        "/Library/Fonts/Arial Unicode.ttf",   # macOS fallback
+        # Linux — available Noto Arabic/Urdu fonts
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNastaliqUrdu-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+        # Windows
+        "C:/Windows/Fonts/ARIALUNI.TTF",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/tahoma.ttf",
+        # macOS
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
     ]
     font = None
     for fp in font_paths:
         try:
-            font = ImageFont.truetype(fp, font_size)
-            break
+            if os.path.exists(fp):
+                font = ImageFont.truetype(fp, font_size)
+                break
         except:
             continue
     if font is None:
@@ -295,11 +302,9 @@ def put_urdu_text(img, text, position, font_size=40, color=(0, 255, 255)):
     
     rgb_color = (color[2], color[1], color[0])
 
-    # ── Reshape & apply bidi so Urdu letters connect properly ──
-    if ARABIC_SUPPORT and text:
-        text = get_display(arabic_reshaper.reshape(text))
-
-    draw.text(position, text, font=font, fill=rgb_color)
+    # Raqm handles RTL and shaping automatically if direction='rtl' is passed.
+    # Manual reshaping/bidi causes issues with modern Pillow/Raqm.
+    draw.text(position, text, font=font, fill=rgb_color, direction="rtl")
 
     return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 

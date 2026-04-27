@@ -180,15 +180,43 @@ PSL_WORD_TO_URDU = {
 def _find_urdu_font() -> Optional[str]:
     """Return path to a font file that renders Urdu/Arabic glyphs, or None."""
     candidates = [
+        # Linux — preferred Urdu fonts (Naskh renders Urdu correctly)
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoNastaliqUrdu-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoKufiArabic-Regular.ttf",
+        # Windows
         "C:/Windows/Fonts/NotoNastaliqUrdu-Regular.ttf",
         "C:/Windows/Fonts/ARIALUNI.TTF",
         "C:/Windows/Fonts/arial.ttf",
         "C:/Windows/Fonts/tahoma.ttf",
         "C:/Windows/Fonts/segoeui.ttf",
-        "/usr/share/fonts/truetype/noto/NotoNastaliqUrdu-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        # macOS
         "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
         "/System/Library/Fonts/Supplemental/GeezaPro.ttc",
+        # Generic Linux fallback
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def _find_latin_font() -> Optional[str]:
+    """Return path to a Latin/Unicode font for rendering English text."""
+    candidates = [
+        # Linux
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        # Windows
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        # macOS
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -197,40 +225,37 @@ def _find_urdu_font() -> Optional[str]:
 
 
 URDU_FONT_PATH = _find_urdu_font()
+LATIN_FONT_PATH = _find_latin_font()
 _FONT_CACHE: dict = {}
 
+print(f"[Font] Urdu  : {URDU_FONT_PATH or 'default (no Urdu font found)'}")
+print(f"[Font] Latin : {LATIN_FONT_PATH or 'default (no Latin font found)'}")
 
-def get_font(size: int) -> ImageFont.FreeTypeFont:
-    """Return a cached truetype font at the requested size, or a default."""
-    key = ("urdu", size)
+
+def get_font(size: int, latin: bool = False) -> ImageFont.FreeTypeFont:
+    """Return a cached truetype font at the requested size.
+
+    latin=True  → use the Latin font (for English labels).
+    latin=False → use the Urdu/Arabic font (for Urdu script).
+    Falls back to PIL default if neither is found.
+    """
+    key = ("latin" if latin else "urdu", size)
     if key in _FONT_CACHE:
         return _FONT_CACHE[key]
+    path = LATIN_FONT_PATH if latin else URDU_FONT_PATH
     try:
-        if URDU_FONT_PATH is not None:
-            f = ImageFont.truetype(URDU_FONT_PATH, size)
-        else:
-            f = ImageFont.load_default()
+        f = ImageFont.truetype(path, size) if path else ImageFont.load_default()
     except Exception:
         f = ImageFont.load_default()
     _FONT_CACHE[key] = f
     return f
 
 
-@functools.lru_cache(maxsize=2048)
-def shape_urdu(text: str) -> str:
-    """Reshape + bidi an Urdu string so it renders correctly in Pillow.
 
-    Cached: the same sentence is reshaped every frame; the cache makes
-    subsequent frames ~free.
-    """
-    if not text:
-        return ""
-    if ARABIC_SUPPORT:
-        try:
-            return get_display(arabic_reshaper.reshape(text))
-        except Exception:
-            return text
-    return text
+def shape_urdu(text: str) -> str:
+    """Pass-through for Urdu text as Raqm handles shaping and BiDi."""
+    return str(text) if text else ""
+
 
 
 # Reusable offscreen PIL draw context for text measurement. Avoids
@@ -453,22 +478,28 @@ def draw_text(img: np.ndarray, xy: Tuple[int, int], text: str, size: int,
         return img
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil)
-    if shape:
-        text = shape_urdu(text)
+    is_urdu = shape
     rgb = (color[2], color[1], color[0])
-    draw.text(xy, text, font=get_font(size), fill=rgb)
+    font = get_font(size, latin=not is_urdu)
+    
+    # Use Raqm RTL for Urdu
+    direction = "rtl" if is_urdu else "ltr"
+    draw.text(xy, text, font=font, fill=rgb, direction=direction)
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
 
+
 def _measure_text_width(draw: ImageDraw.ImageDraw, text: str,
-                        font: ImageFont.FreeTypeFont) -> int:
+                        font: ImageFont.FreeTypeFont, direction: str = "ltr") -> int:
     """Return the pixel width of `text` when rendered in `font`."""
     try:
-        bbox = draw.textbbox((0, 0), text, font=font)
+        bbox = draw.textbbox((0, 0), text, font=font, direction=direction)
         return bbox[2] - bbox[0]
-    except AttributeError:
-        w, _ = draw.textsize(text, font=font)
+    except Exception:
+        # Fallback for older Pillow
+        w, _ = draw.textsize(text, font=font, direction=direction)
         return w
+
 
 
 def draw_rtl_text(img: np.ndarray, right_xy: Tuple[int, int], text: str,
@@ -477,16 +508,18 @@ def draw_rtl_text(img: np.ndarray, right_xy: Tuple[int, int], text: str,
     """Draw Urdu text right-anchored at `right_xy`."""
     if not text:
         return img
-    shaped = shape_urdu(text)
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil)
-    font = get_font(size)
-    w = _measure_text_width(draw, shaped, font)
+    font = get_font(size, latin=False)
+    # Raqm handles RTL anchoring if we use align='right' or just calculate w.
+    # To keep it simple and consistent with LTR:
+    w = _measure_text_width(draw, text, font, direction="rtl")
     x = right_xy[0] - w
     y = right_xy[1]
     rgb = (color[2], color[1], color[0])
-    draw.text((x, y), shaped, font=font, fill=rgb)
+    draw.text((x, y), text, font=font, fill=rgb, direction="rtl")
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+
 
 
 def draw_wrapped_rtl(img: np.ndarray, right_x: int, top_y: int,
@@ -502,30 +535,27 @@ def draw_wrapped_rtl(img: np.ndarray, right_x: int, top_y: int,
         return img
     pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil)
-    font = get_font(size)
+    font = get_font(size, latin=False)
     words = text.split()
-    # Build raw (unshaped) lines by measuring shaped widths so wrap is exact.
     lines: List[str] = []
     cur: List[str] = []
     for w in words:
         candidate = " ".join(cur + [w])
-        shaped = shape_urdu(candidate)
-        if _measure_text_width(draw, shaped, font) <= max_width or not cur:
+        if _measure_text_width(draw, candidate, font, direction="rtl") <= max_width or not cur:
             cur.append(w)
         else:
             lines.append(" ".join(cur))
             cur = [w]
     if cur:
         lines.append(" ".join(cur))
-    # Keep only the last `max_lines` lines so the newest content stays.
     lines = lines[-max_lines:]
     rgb = (color[2], color[1], color[0])
-    for i, raw_line in enumerate(lines):
-        shaped = shape_urdu(raw_line)
-        w = _measure_text_width(draw, shaped, font)
+    for i, line in enumerate(lines):
+        w = _measure_text_width(draw, line, font, direction="rtl")
         draw.text((right_x - w, top_y + i * line_height),
-                  shaped, font=font, fill=rgb)
+                  line, font=font, fill=rgb, direction="rtl")
     return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
+
 
 
 class _TextBatch:
@@ -574,29 +604,29 @@ class _TextBatch:
             kind = op[0]
             if kind == "d":
                 _, xy, text, size, color, shape = op
-                t = shape_urdu(text) if shape else text
+                is_urdu = shape
                 rgb = (color[2], color[1], color[0])
-                draw.text(xy, t, font=get_font(size), fill=rgb)
+                direction = "rtl" if is_urdu else "ltr"
+                draw.text(xy, text, font=get_font(size, latin=not is_urdu), 
+                          fill=rgb, direction=direction)
             elif kind == "r":
                 _, right_xy, text, size, color = op
-                shaped = shape_urdu(text)
-                font = get_font(size)
-                w = _measure_text_width(draw, shaped, font)
+                font = get_font(size, latin=False)
+                w = _measure_text_width(draw, text, font, direction="rtl")
                 rgb = (color[2], color[1], color[0])
-                draw.text((right_xy[0] - w, right_xy[1]), shaped,
-                          font=font, fill=rgb)
+                draw.text((right_xy[0] - w, right_xy[1]), text,
+                          font=font, fill=rgb, direction="rtl")
             else:  # "w"
                 (_, right_x, top_y, text, size, max_width,
                  line_height, max_lines, color) = op
-                font = get_font(size)
+                font = get_font(size, latin=False)
                 rgb = (color[2], color[1], color[0])
                 words = text.split()
                 lines: List[str] = []
                 cur: List[str] = []
                 for word in words:
                     candidate = " ".join(cur + [word])
-                    shaped = shape_urdu(candidate)
-                    if (_measure_text_width(draw, shaped, font) <= max_width
+                    if (_measure_text_width(draw, candidate, font, direction="rtl") <= max_width
                             or not cur):
                         cur.append(word)
                     else:
@@ -605,11 +635,11 @@ class _TextBatch:
                 if cur:
                     lines.append(" ".join(cur))
                 lines = lines[-max_lines:]
-                for i, raw_line in enumerate(lines):
-                    shaped = shape_urdu(raw_line)
-                    w = _measure_text_width(draw, shaped, font)
+                for i, line in enumerate(lines):
+                    w = _measure_text_width(draw, line, font, direction="rtl")
                     draw.text((right_x - w, top_y + i * line_height),
-                              shaped, font=font, fill=rgb)
+                              line, font=font, fill=rgb, direction="rtl")
+
         self.ops.clear()
         return cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
