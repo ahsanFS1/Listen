@@ -1,0 +1,34 @@
+name: listen_psl
+description: Pakistani Sign Language Recognition App
+version: 1.0.0+1
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # MediaPipe HandLandmarker (JNI bridge to official Android SDK, Android-only)
+  hand_landmarker: ^2.2.0
+
+  # TFLite inference — TensorFlow-maintained, supports arbitrary input shapes
+  tflite_flutter: ^0.12.1
+
+  # Camera feed (shared dependency with hand_landmarker)
+  camera: ^0.11.3
+
+  # Urdu TTS
+  flutter_tts: ^4.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/models/
