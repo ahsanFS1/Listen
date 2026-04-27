@@ -2,82 +2,169 @@ import * as Speech from "expo-speech";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 
-// Thin hook over expo-speech with three layers of resilience:
-// 1. Picks the best available Urdu voice on first use (ur-PK > ur > hi-IN as
-//    a last-ditch fallback because hi-IN tends to ship on more devices and
-//    can render Urdu glyphs intelligibly).
-// 2. Catches every error so a failing speak() never crashes the screen.
-// 3. Reports a `supported` flag the UI can use to show a hint when speech
-//    isn't available (e.g. plain web with no SpeechSynthesis).
+// TTS Hook with Android-specific fixes
+// 1. Better voice selection for Urdu on Android
+// 2. Retries with fallbacks when primary voice fails
+// 3. Queue management to prevent overlapping speech
 export function useTTS() {
   const [supported, setSupported] = useState(true);
-  const [voice, setVoice] = useState<string | undefined>(undefined);
+  const [voice, setVoice] = useState<Speech.Voice | null>(null);
+  const [voices, setVoices] = useState<Speech.Voice[]>([]);
   const speakingRef = useRef(false);
+  const queueRef = useRef<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    
+    const initTTS = async () => {
       try {
-        // expo-speech always exists, but the underlying engine may not on web.
+        // Check if speech is available
+        const isAvailable = await Speech.isSpeakingAsync().then(() => true).catch(() => false);
+        
         if (Platform.OS === "web" && typeof window !== "undefined") {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const synth = (window as any).speechSynthesis;
+          const synth = (window as unknown as { speechSynthesis?: SpeechSynthesis }).speechSynthesis;
           if (!synth) {
             if (!cancelled) setSupported(false);
             return;
           }
         }
-        const voices = await Speech.getAvailableVoicesAsync();
+        
+        // Get available voices
+        const availableVoices = await Speech.getAvailableVoicesAsync();
         if (cancelled) return;
-        // Prefer Urdu, then Hindi (similar phonetics + more devices ship it),
-        // then English as a final fallback.
-        const preferred =
-          voices.find((v) => v.language?.toLowerCase().startsWith("ur")) ??
-          voices.find((v) => v.language?.toLowerCase().startsWith("hi")) ??
-          voices.find((v) => v.language?.toLowerCase().startsWith("en"));
-        setVoice(preferred?.identifier);
-      } catch {
+        
+        setVoices(availableVoices);
+        
+        // Find best voice for Urdu
+        // Priority: ur-PK > ur > hi-IN > hi > en
+        const urduVoice = availableVoices.find((v) => 
+          v.language?.toLowerCase() === "ur-pk" || 
+          v.language?.toLowerCase().startsWith("ur")
+        );
+        
+        const hindiVoice = availableVoices.find((v) => 
+          v.language?.toLowerCase().startsWith("hi")
+        );
+        
+        const englishVoice = availableVoices.find((v) => 
+          v.language?.toLowerCase().startsWith("en")
+        );
+        
+        const bestVoice = urduVoice ?? hindiVoice ?? englishVoice ?? availableVoices[0];
+        
+        if (bestVoice) {
+          setVoice(bestVoice);
+          console.log(`[TTS] Selected voice: ${bestVoice.identifier} (${bestVoice.language})`);
+        } else {
+          console.warn("[TTS] No suitable voice found");
+        }
+        
+        setSupported(true);
+      } catch (err) {
+        console.error("[TTS] Initialization error:", err);
         if (!cancelled) setSupported(false);
       }
-    })();
+    };
+    
+    initTTS();
+    
     return () => {
       cancelled = true;
+      Speech.stop();
     };
   }, []);
 
+  // Process speech queue
+  const processQueue = useCallback(async () => {
+    if (speakingRef.current || queueRef.current.length === 0) return;
+    
+    const text = queueRef.current.shift();
+    if (!text) return;
+    
+    speakingRef.current = true;
+    
+    try {
+      const options: Speech.SpeechOptions = {
+        language: voice?.language ?? "ur-PK",
+        voice: voice?.identifier,
+        rate: Platform.OS === "android" ? 0.9 : 0.85,
+        pitch: 1.0,
+        onDone: () => {
+          speakingRef.current = false;
+          // Process next in queue
+          setTimeout(() => processQueue(), 100);
+        },
+        onStopped: () => {
+          speakingRef.current = false;
+        },
+        onError: (error) => {
+          console.error("[TTS] Speech error:", error);
+          speakingRef.current = false;
+          // Retry with fallback voice
+          if (voice && voices.length > 1) {
+            const fallback = voices.find(v => v.identifier !== voice.identifier);
+            if (fallback) {
+              setVoice(fallback);
+              queueRef.current.unshift(text);
+            }
+          }
+          setTimeout(() => processQueue(), 100);
+        },
+      };
+      
+      Speech.speak(text, options);
+    } catch (err) {
+      console.error("[TTS] Speak error:", err);
+      speakingRef.current = false;
+    }
+  }, [voice, voices]);
+
   const speak = useCallback(
-    async (text: string, opts?: { language?: string }) => {
+    async (text: string, opts?: { language?: string; priority?: boolean }) => {
       if (!text?.trim()) return;
-      try {
-        const isSpeaking = await Speech.isSpeakingAsync().catch(() => false);
-        if (isSpeaking) Speech.stop();
-        speakingRef.current = true;
-        Speech.speak(text, {
-          language: opts?.language ?? "ur-PK",
-          voice,
-          rate: 0.85,
-          pitch: 1.0,
-          onDone: () => {
-            speakingRef.current = false;
-          },
-          onStopped: () => {
-            speakingRef.current = false;
-          },
-          onError: () => {
-            speakingRef.current = false;
-          },
-        });
-      } catch {
-        // Last-resort: silently swallow so a missing TTS engine never crashes.
+      if (!supported) {
+        console.warn("[TTS] Speech not supported");
+        return;
+      }
+      
+      // Stop current speech if priority
+      if (opts?.priority) {
+        Speech.stop();
+        speakingRef.current = false;
+        queueRef.current = [];
+      }
+      
+      // Add to queue
+      queueRef.current.push(text);
+      
+      // Start processing if not already speaking
+      if (!speakingRef.current) {
+        processQueue();
       }
     },
-    [voice],
+    [supported, processQueue]
   );
 
   const stop = useCallback(() => {
     Speech.stop();
     speakingRef.current = false;
+    queueRef.current = [];
   }, []);
 
-  return { speak, stop, supported, voice };
+  const isSpeaking = useCallback(async () => {
+    try {
+      return await Speech.isSpeakingAsync();
+    } catch {
+      return false;
+    }
+  }, []);
+
+  return { 
+    speak, 
+    stop, 
+    supported, 
+    voice: voice?.identifier,
+    isSpeaking,
+    voiceLanguage: voice?.language ?? "ur-PK",
+  };
 }

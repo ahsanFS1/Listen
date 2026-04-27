@@ -21,6 +21,7 @@ import { useSignRecognition } from "@/hooks/useSignRecognition";
 import { useTTS } from "@/hooks/useTTS";
 import { useSessionStore } from "@/store/sessionStore";
 import { colors } from "@/theme/colors";
+import { PipelineMode } from "@/ml/pipeline";
 
 type TranslateMode = "words" | "alphabets";
 
@@ -30,32 +31,73 @@ export default function TranslateScreen() {
   const [mode, setMode] = useState<TranslateMode>("words");
   const [showHistory, setShowHistory] = useState(false);
   const [ttsHint, setTtsHint] = useState<string | null>(null);
+  const [lastCommittedWord, setLastCommittedWord] = useState<string | null>(null);
+  const [isHoldingSign, setIsHoldingSign] = useState(false); // Hold-to-sign for demo mode
+  // Some Android emulators report LENS_FACING=null on their virtual camera,
+  // so requesting facing="front" returns no match and the preview renders
+  // black. We start on "front" but flip to "back" automatically if the
+  // preview never produces a valid surface.
+  const [cameraFacing, setCameraFacing] = useState<"front" | "back">("front");
+  const [cameraReady, setCameraReady] = useState(false);
 
-  // Predictions only flow when camera is on AND we're in a working mode.
-  const recognitionActive = cameraOn && mode === "words";
-  const { prediction, reset } = useSignRecognition(recognitionActive);
-  const { speak, supported: ttsSupported } = useTTS();
+  // Predictions flow when camera is on - both modes now work
+  const pipelineMode: PipelineMode = mode === "words" ? "words" : "alphabet";
+  const recognitionActive = cameraOn;
+  const { prediction, reset, hasHands, isCommitted } = useSignRecognition(recognitionActive, pipelineMode, isHoldingSign);
+  const { speak, supported: ttsSupported, voiceLanguage } = useTTS();
   const { history, commitWord, clearHistory, undoLast } = useSessionStore();
+  
+  // Track if alphabet model is available
+  const [alphabetReady, setAlphabetReady] = useState(true); // Set to true since we added the model
 
-  // Auto-commit on the pipeline's COMMITTED frame (one commit per signing cycle).
+  // Auto-commit on the pipeline's COMMITTED frame with auto-speak
   useEffect(() => {
     if (!prediction || !prediction.committed) return;
     if (!prediction.label) return;
-    commitWord({
-      label: prediction.label,
-      english: prediction.english,
-      urdu: prediction.urdu,
-    });
-  }, [prediction, commitWord]);
+    
+    // Only commit if it's a new word (not the same as last committed)
+    if (prediction.label !== lastCommittedWord) {
+      commitWord({
+        label: prediction.label,
+        english: prediction.english,
+        urdu: prediction.urdu,
+      });
+      setLastCommittedWord(prediction.label);
+      
+      // Auto-speak the committed word with priority
+      if (ttsSupported) {
+        speak(prediction.urdu, { priority: true });
+      }
+    }
+  }, [prediction, commitWord, lastCommittedWord, speak, ttsSupported]);
+  
+  // Reset lastCommittedWord when camera stops
+  useEffect(() => {
+    if (!cameraOn) {
+      setLastCommittedWord(null);
+    }
+  }, [cameraOn]);
 
-  const onStart = async () => {
-    if (mode === "alphabets") {
-      Alert.alert(
-        "Alphabets coming soon",
-        "The alphabet model is not yet bundled. Retrain via src/training/train_psl.py to enable this mode.",
-      );
+  // If the front camera never reports ready within a short window, flip to back.
+  // expo-camera silently renders a black surface when the requested facing
+  // doesn't match any device camera (e.g. emulators where LENS_FACING is null).
+  useEffect(() => {
+    if (!cameraOn) {
+      setCameraReady(false);
+      setCameraFacing("front");
       return;
     }
+    if (cameraReady || cameraFacing === "back") return;
+    const t = setTimeout(() => {
+      if (!cameraReady) {
+        console.warn("[CameraView] front camera not ready, flipping to back");
+        setCameraFacing("back");
+      }
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [cameraOn, cameraReady, cameraFacing]);
+
+  const onStart = async () => {
     if (!permission?.granted) {
       const r = await requestPermission();
       if (!r.granted) {
@@ -67,6 +109,7 @@ export default function TranslateScreen() {
       }
     }
     setCameraOn(true);
+    setLastCommittedWord(null);
     reset();
   };
 
@@ -85,16 +128,21 @@ export default function TranslateScreen() {
   };
 
   const state = prediction?.state ?? "IDLE";
-  const showingHands = !!prediction && prediction.confidence > 0.1;
+  // Only show predictions when hands are actually visible
+  const showingHands = hasHands && !!prediction;
   const pillColor =
     state === "PREDICTING" || state === "COMMITTED"
       ? colors.accent
       : state === "SIGNING"
       ? colors.warn
+      : showingHands
+      ? colors.ok
       : colors.textDim;
   const pillLabel = !cameraOn
     ? "OFFLINE"
     : !showingHands
+    ? "SHOW HANDS"
+    : state === "IDLE"
     ? "SCANNING"
     : state;
 
@@ -136,8 +184,16 @@ export default function TranslateScreen() {
               {cameraOn && permission?.granted ? (
                 <CameraView
                   style={{ width: "100%", height: "100%" }}
-                  facing="front"
-                  mirror
+                  facing={cameraFacing}
+                  mirror={cameraFacing === "front"}
+                  onCameraReady={() => setCameraReady(true)}
+                  onMountError={(e) => {
+                    console.warn("[CameraView] mount error", e);
+                    if (cameraFacing === "front") {
+                      setCameraFacing("back");
+                      setCameraReady(false);
+                    }
+                  }}
                 />
               ) : (
                 <CameraIdle onStart={onStart} mode={mode} />
@@ -170,28 +226,63 @@ export default function TranslateScreen() {
               ) : null}
 
               {cameraOn ? (
-                <Pressable
-                  onPress={onStop}
-                  style={{
-                    position: "absolute",
-                    top: 14,
-                    right: 14,
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 4,
-                    backgroundColor: "rgba(0,0,0,0.55)",
-                    borderWidth: 1,
-                    borderColor: colors.border,
-                    paddingHorizontal: 10,
-                    paddingVertical: 5,
-                    borderRadius: 999,
-                  }}
-                >
-                  <Ionicons name="stop" size={11} color={colors.text} />
-                  <Text style={{ color: colors.text, fontSize: 11, fontWeight: "700" }}>
-                    STOP
-                  </Text>
-                </Pressable>
+                <>
+                  {/* Hold to Sign button - for demo mode control */}
+                  <Pressable
+                    onPressIn={() => setIsHoldingSign(true)}
+                    onPressOut={() => setIsHoldingSign(false)}
+                    style={({ pressed }) => ({
+                      position: "absolute",
+                      top: 14,
+                      left: 14,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 4,
+                      backgroundColor: pressed ? colors.accent : "rgba(0,0,0,0.55)",
+                      borderWidth: 2,
+                      borderColor: isHoldingSign ? colors.accent : colors.border,
+                      paddingHorizontal: 12,
+                      paddingVertical: 6,
+                      borderRadius: 999,
+                    })}
+                  >
+                    <Ionicons 
+                      name={isHoldingSign ? "hand-left" : "hand-left-outline"} 
+                      size={14} 
+                      color={isHoldingSign ? "#000" : colors.text} 
+                    />
+                    <Text style={{ 
+                      color: isHoldingSign ? "#000" : colors.text, 
+                      fontSize: 12, 
+                      fontWeight: "700" 
+                    }}>
+                      {isHoldingSign ? "SIGNING..." : "HOLD TO SIGN"}
+                    </Text>
+                  </Pressable>
+
+                  <Pressable
+                    onPress={onStop}
+                    style={{
+                      position: "absolute",
+                      top: 14,
+                      right: 14,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 4,
+                      backgroundColor: "rgba(0,0,0,0.55)",
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      paddingHorizontal: 10,
+                      paddingVertical: 5,
+                      borderRadius: 999,
+                    }}
+                  >
+                    <Ionicons name="stop" size={11} color={colors.text} />
+                    <Text style={{ color: colors.text, fontSize: 11, fontWeight: "700" }}>
+                      STOP
+                    </Text>
+                  </Pressable>
+                </>
               ) : null}
 
               {/* "No hands" coaching when camera is on but we haven't seen a sign yet */}
@@ -494,7 +585,6 @@ function ModeToggle({
         value="alphabets"
         label="ALPHABETS"
         icon={<MaterialCommunityIcons name="alphabetical-variant" size={16} color={mode === "alphabets" ? colors.accent : colors.textDim} />}
-        badge="SOON"
       />
     </View>
   );
@@ -533,7 +623,7 @@ function CameraIdle({ onStart, mode }: { onStart: () => void; mode: TranslateMod
       <Text style={{ color: colors.textDim, textAlign: "center", lineHeight: 20 }}>
         {mode === "words"
           ? "Sign one word at a time, holding each gesture for ~1 second."
-          : "Alphabet recognition is coming soon."}
+          : "Sign each Urdu alphabet letter clearly. Build words letter by letter!"}
       </Text>
       <Pressable
         onPress={onStart}
