@@ -1,19 +1,21 @@
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
-import 'package:hand_landmarker/hand_landmarker.dart';
 
 import '../data/signs.dart';
+import 'hand_landmarker_native.dart';
 import 'prediction.dart';
 
+// Constants mirror src/inference/psl_words_v2.py exactly so mobile predictions
+// match the desktop reference. Drift here = drift in accuracy.
 class SignPipeline {
   static const int _kFrameDim = 126;
-  static const int _kBufCap = 60;      // model requires exactly 60 frames
-  static const int _kStride = 2;       // infer every 2 frames
-  static const double _kCommitConf = 0.65;
-  static const double _kEmaAlpha = 0.55;
-  static const double _kCooldownSec = 0.8;
-  static const int _kMissGrace = 5;    // tolerate 5 missed frames before reset
+  static const int _kBufCap = 60;
+  static const int _kStride = 3;                 // STRIDE_FRAMES
+  static const double _kCommitConf = 0.70;       // COMMIT_CONF_DEFAULT
+  static const double _kEmaAlpha = 0.60;         // EMA_INFER_ALPHA
+  static const double _kCooldownSec = 0.8;       // COOLDOWN_SECONDS
+  static const double _kMotionVarMin = 1e-4;     // MOTION_VAR_MIN
+  static const double _kSigningQuietSec = 1.2;   // SIGNING→IDLE timeout
 
   static const MethodChannel _channel = MethodChannel('psl/tflite');
 
@@ -28,15 +30,17 @@ class SignPipeline {
 
   // FSM
   SignState _state = SignState.idle;
+  DateTime _stateSince = DateTime.now();
   int _framesSinceInfer = 0;
-  Float32List? _lastFrame;
   Float32List? _emaProbs;
   DateTime? _cooldownUntil;
-  int _missCount = 0;
 
   // Reusable buffers
   final Float32List _raw = Float32List(_kFrameDim);
   final Float32List _norm = Float32List(_kFrameDim);
+  final Float32List _prevNorm = Float32List(_kFrameDim);
+  bool _hasPrevNorm = false;
+  double _lastMotion = 0.0;
   final Float32List _snap = Float32List(_kBufCap * _kFrameDim);
 
   // Inference is async (MethodChannel) — guard against re-entry.
@@ -67,33 +71,38 @@ class SignPipeline {
     _buf.fillRange(0, _buf.length, 0);
     _wIdx = 0;
     _fill = 0;
-    _state = SignState.idle;
+    _enterState(SignState.idle, DateTime.now());
     _framesSinceInfer = 0;
-    _lastFrame = null;
     _emaProbs = null;
     _cooldownUntil = null;
-    _missCount = 0;
+    _hasPrevNorm = false;
+    _lastMotion = 0.0;
     _last = null;
+  }
+
+  void _enterState(SignState s, DateTime now) {
+    if (_state == s) return;
+    _state = s;
+    _stateSince = now;
   }
 
   /// Process a frame. Returns the latest prediction synchronously; inference
   /// itself runs asynchronously in the background and updates [_last] when done.
-  Prediction process(List<Hand> hands) {
+  Prediction process(List<NativeHand> hands) {
     if (!_ready) return Prediction.idle;
+    final hasHands = hands.isNotEmpty;
+    final now = DateTime.now();
 
-    if (hands.isEmpty) {
-      _missCount++;
-      if (_missCount >= _kMissGrace) {
-        reset();
-        return Prediction.idle;
-      }
-      return _last ?? Prediction.idle;
+    // Match psl_words_v2.py:1493 — always extract + push, even when no hands
+    // (frame_from_mediapipe returns zeros). Skipping pushes makes the 60-frame
+    // window span a longer wall-clock time than the model was trained on.
+    if (hasHands) {
+      _extractFeatures(hands);
+    } else {
+      _raw.fillRange(0, _raw.length, 0);
     }
-    _missCount = 0;
-
-    _extractFeatures(hands);
     _normalizeFeatures();
-    _lastFrame = Float32List.fromList(_norm);
+    _lastMotion = _computeMotion();
 
     final off = _wIdx * _kFrameDim;
     for (int i = 0; i < _kFrameDim; i++) {
@@ -101,52 +110,50 @@ class SignPipeline {
     }
     _wIdx = (_wIdx + 1) % _kBufCap;
     if (_fill < _kBufCap) _fill++;
+    for (int i = 0; i < _kFrameDim; i++) {
+      _prevNorm[i] = _norm[i];
+    }
+    _hasPrevNorm = true;
     _framesSinceInfer++;
 
-    final now = DateTime.now();
-    _updateFsm(true, now);
+    _updateFsm(hasHands, now);
 
-    if ((_state == SignState.signing || _state == SignState.predicting) &&
+    // Only SIGNING triggers fresh inference (matches psl_words_v2.py:1510).
+    if (_state == SignState.signing &&
         _fill >= _kBufCap &&
         _framesSinceInfer >= _kStride &&
+        _lastMotion >= _kMotionVarMin &&
         !_inferInFlight) {
       _framesSinceInfer = 0;
+      _enterState(SignState.predicting, now);
       _kickInference();
     }
 
     return _last ?? Prediction(
       label: '', english: '\u2014', urdu: '\u2014',
-      confidence: 0, state: _state, committed: false, hasHands: true,
+      confidence: 0, state: _state, committed: false, hasHands: hasHands,
     );
   }
 
   // ── Feature extraction ──────────────────────────────────────────────────
 
-  void _extractFeatures(List<Hand> hands) {
+  void _extractFeatures(List<NativeHand> hands) {
     _raw.fillRange(0, _raw.length, 0);
 
-    if (hands.length == 1) {
-      final wristX = hands[0].landmarks[0].x;
-      if (wristX >= 0.5) {
-        _fillHand(0, hands[0]);
-      } else {
-        _fillHand(63, hands[0]);
+    // psl_words_v2.py:323 sets HANDS_INVERT_HANDEDNESS=True: MediaPipe is trained
+    // on selfie-flipped frames, but we feed raw frames, so its label is reversed
+    // relative to anatomy. Label "Right" → signer's anatomical LEFT → first 63
+    // dims; "Left" → second 63 dims.
+    for (final h in hands) {
+      final offset = h.isRightLabel ? 0 : 63;
+      bool slotFilled = false;
+      for (int i = 0; i < 63; i++) {
+        if (_raw[offset + i] != 0) { slotFilled = true; break; }
       }
-    } else {
-      final sorted = List<Hand>.from(hands)
-        ..sort((a, b) => b.landmarks[0].x.compareTo(a.landmarks[0].x));
-      _fillHand(0, sorted[0]);
-      _fillHand(63, sorted[1]);
-    }
-  }
-
-  void _fillHand(int offset, Hand hand) {
-    final lms = hand.landmarks;
-    for (int i = 0; i < 21 && i < lms.length; i++) {
-      final b = offset + i * 3;
-      _raw[b] = lms[i].x;
-      _raw[b + 1] = lms[i].y;
-      _raw[b + 2] = lms[i].z;
+      if (slotFilled) continue;
+      for (int i = 0; i < 63; i++) {
+        _raw[offset + i] = h.coords[i];
+      }
     }
   }
 
@@ -186,28 +193,50 @@ class SignPipeline {
     }
   }
 
-  // ── FSM ─────────────────────────────────────────────────────────────────
+  double _computeMotion() {
+    if (!_hasPrevNorm) return 0.0;
+    double sum = 0.0;
+    for (int i = 0; i < _kFrameDim; i++) {
+      final d = _norm[i] - _prevNorm[i];
+      sum += d * d;
+    }
+    return sum / _kFrameDim;
+  }
+
+  // ── FSM (matches psl_words_v2.py:1499-1529) ─────────────────────────────
 
   void _updateFsm(bool hasHands, DateTime now) {
     switch (_state) {
       case SignState.idle:
-        if (hasHands) _state = SignState.signing;
+        if (hasHands && _lastMotion > _kMotionVarMin) {
+          _enterState(SignState.signing, now);
+        }
       case SignState.signing:
-        if (!hasHands) {
-          _state = SignState.idle;
-        } else {
-          _state = SignState.predicting;
+        // Only return to IDLE if quiet (no hands, no motion) for >1.2s.
+        if (!hasHands &&
+            _lastMotion < _kMotionVarMin &&
+            now.difference(_stateSince).inMilliseconds >
+                (_kSigningQuietSec * 1000).round()) {
+          _enterState(SignState.idle, now);
         }
       case SignState.predicting:
+        // Stays here until inference callback resolves it.
         break;
       case SignState.committed:
         _cooldownUntil = now.add(
           Duration(milliseconds: (_kCooldownSec * 1000).round()),
         );
-        _state = SignState.cooldown;
+        _enterState(SignState.cooldown, now);
       case SignState.cooldown:
-        if (_cooldownUntil != null && now.isAfter(_cooldownUntil!)) {
-          _state = SignState.idle;
+        if (hasHands) {
+          _cooldownUntil = now.add(
+            Duration(milliseconds: (_kCooldownSec * 1000).round()),
+          );
+        }
+        if (_cooldownUntil != null &&
+            now.isAfter(_cooldownUntil!) &&
+            !hasHands) {
+          _enterState(SignState.idle, now);
           _buf.fillRange(0, _buf.length, 0);
           _wIdx = 0;
           _fill = 0;
@@ -220,7 +249,6 @@ class SignPipeline {
 
   void _kickInference() {
     _inferInFlight = true;
-    // Snapshot circular buffer into linear order [oldest..newest].
     if (_fill < _kBufCap) {
       final pad = (_kBufCap - _fill) * _kFrameDim;
       _snap.fillRange(0, pad, 0);
@@ -238,8 +266,6 @@ class SignPipeline {
       }
     }
 
-    // Pass features as raw bytes (native-order float32) — fastest MethodChannel
-    // path: typed-data lists are zero-copy on the platform side.
     final bytes = _snap.buffer.asUint8List(_snap.offsetInBytes, _snap.lengthInBytes);
 
     _channel.invokeMethod<Float64List>('runInference', {
@@ -276,8 +302,13 @@ class SignPipeline {
     }
 
     final label = topIdx < kClassLabels.length ? kClassLabels[topIdx] : '';
-    debugPrint('PSL: $label ${(topConf * 100).toStringAsFixed(1)}% fill=$_fill');
-    _last = _buildPrediction(label, topConf, DateTime.now());
+    debugPrint('PSL: $label ${(topConf * 100).toStringAsFixed(1)}% fill=$_fill motion=${_lastMotion.toStringAsExponential(2)}');
+    final now = DateTime.now();
+    _last = _buildPrediction(label, topConf, now);
+    // Drop back to SIGNING so subsequent windows can fire (matches py:1522).
+    if (!(_last?.committed ?? false) && _state == SignState.predicting) {
+      _enterState(SignState.signing, now);
+    }
   }
 
   Prediction _buildPrediction(String label, double confidence, DateTime now) {
@@ -290,7 +321,7 @@ class SignPipeline {
         confidence >= _kCommitConf &&
         _state != SignState.cooldown) {
       committed = true;
-      _state = SignState.committed;
+      _enterState(SignState.committed, now);
     }
 
     return Prediction(

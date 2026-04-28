@@ -11,12 +11,12 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
 
-  # MediaPipe HandLandmarker (JNI bridge to official Android SDK)
-  hand_landmarker: ^2.2.0
-
-  # TFLite inference runs in a native Kotlin module (see android/.../TfliteInferencePlugin.kt)
-  # — needed because tflite_flutter's LiteRT runtime can't load Select TF ops
-  # required by our LSTM model (FlexTensorListReserve etc.).
+  # MediaPipe HandLandmarker and TFLite inference both run in native Kotlin modules
+  # (see android/.../HandLandmarkerNativePlugin.kt, TfliteInferencePlugin.kt).
+  # We dropped the `hand_landmarker` pub package because its YUV→JPEG→Bitmap roundtrip
+  # is the bottleneck (~50ms/frame on A06) and it strips MediaPipe's handedness label.
+  # We dropped `tflite_flutter` because its LiteRT runtime can't load Select TF ops
+  # required by our LSTM (FlexTensorListReserve).
 
   # Camera feed
   camera: ^0.11.3

@@ -2,8 +2,8 @@ import 'dart:async';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:hand_landmarker/hand_landmarker.dart';
 
+import '../ml/hand_landmarker_native.dart';
 import '../ml/prediction.dart';
 import '../ml/sign_pipeline.dart';
 import '../theme/app_colors.dart';
@@ -24,8 +24,8 @@ class _TranslateScreenState extends State<TranslateScreen> {
   bool _cameraReady = false;
   bool _useFrontCamera = true;
 
-  // ── hand landmarker (MediaPipe) ─────────────────────────────────────────
-  HandLandmarkerPlugin? _landmarker;
+  // ── hand landmarker (native MediaPipe Tasks) ────────────────────────────
+  final _landmarker = HandLandmarkerNative();
   bool _landmarkerReady = false;
 
   // ── pipeline (feature extraction + TFLite + FSM) ────────────────────────
@@ -59,7 +59,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
   @override
   void dispose() {
     _stopCamera();
-    _landmarker?.dispose();
+    _landmarker.dispose();
     _pipeline.dispose();
     _pred.dispose();
     _tts.stop();
@@ -72,17 +72,13 @@ class _TranslateScreenState extends State<TranslateScreen> {
     _tts.setSpeechRate(0.5);
     _ttsReady = true;
 
-    // Init hand landmarker (synchronous — JNI call)
+    // Init native MediaPipe HandLandmarker (GPU delegate)
     try {
-      _landmarker = HandLandmarkerPlugin.create(
-        numHands: 2,
-        minHandDetectionConfidence: 0.5,
-        delegate: HandLandmarkerDelegate.cpu,
-      );
+      await _landmarker.init(numHands: 2, minConf: 0.5, useGpu: true);
       _landmarkerReady = true;
-      debugPrint('PSL: HandLandmarker initialized');
+      debugPrint('PSL: native HandLandmarker initialized (GPU)');
     } catch (e) {
-      debugPrint('PSL: HandLandmarker init FAILED: $e');
+      debugPrint('PSL: native HandLandmarker init FAILED: $e');
     }
 
     // Init TFLite model
@@ -112,6 +108,8 @@ class _TranslateScreenState extends State<TranslateScreen> {
 
     final ctrl = CameraController(
       desc,
+      // Medium (~720x480) matches PROC_WIDTH=640 in psl_words_v2.py:85.
+      // Low resolution made landmarks too jittery and hurt classifier accuracy.
       ResolutionPreset.medium,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.yuv420,
@@ -129,24 +127,20 @@ class _TranslateScreenState extends State<TranslateScreen> {
     });
   }
 
-  void _onCameraFrame(CameraImage image) {
+  void _onCameraFrame(CameraImage image) async {
     // Throttle: skip if previous detection still running
     if (_detecting || !_landmarkerReady || !_pipeline.isReady) return;
     _detecting = true;
 
     try {
       final rotation = _camera?.description.sensorOrientation ?? 0;
+      final hands = await _landmarker.detect(image, rotation);
 
-      // Call MediaPipe hand landmarker (synchronous JNI — blocks main thread)
-      final hands = _landmarker!.detect(image, rotation);
+      if (!mounted) return;
 
-      if (!mounted) { _detecting = false; return; }
-
-      // Run through pipeline (feature extraction + TFLite + FSM)
       final prediction = _pipeline.process(hands);
       _pred.value = prediction;
 
-      // Handle commit
       if (prediction.committed &&
           prediction.label.isNotEmpty &&
           prediction.label != _lastCommitted) {
