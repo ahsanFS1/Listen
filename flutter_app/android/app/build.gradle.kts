@@ -40,16 +40,8 @@ android {
 }
 
 dependencies {
-    // Native TFLite Java/Kotlin runtime — used by TfliteInferencePlugin.kt for LSTM inference.
-    // We don't use tflite_flutter for inference because its bundled LiteRT runtime can't load
-    // Select TF ops required by our model (FlexTensorListReserve from TensorList ops).
-    implementation("org.tensorflow:tensorflow-lite:2.16.1")
-    implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.16.1")
-
-    // MediaPipe HandLandmarker — used by HandLandmarkerNativePlugin.kt.
-    // We don't use the hand_landmarker pub package because its YUV→JPEG→Bitmap roundtrip per
-    // frame is ~50ms wasted, and it strips MediaPipe's handedness label which we need.
-    implementation("com.google.mediapipe:tasks-vision:0.10.26.1")
+    // No on-device ML deps. Inference runs server-side over WebSocket.
+    // YuvJpegPlugin.kt only uses platform graphics APIs.
 }
 
 flutter {

@@ -11,17 +11,20 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
 
-  # MediaPipe HandLandmarker and TFLite inference both run in native Kotlin modules
-  # (see android/.../HandLandmarkerNativePlugin.kt, TfliteInferencePlugin.kt).
-  # We dropped the `hand_landmarker` pub package because its YUV→JPEG→Bitmap roundtrip
-  # is the bottleneck (~50ms/frame on A06) and it strips MediaPipe's handedness label.
-  # We dropped `tflite_flutter` because its LiteRT runtime can't load Select TF ops
-  # required by our LSTM (FlexTensorListReserve).
+  # Inference runs server-side over a WebSocket (see server/). The Flutter
+  # app captures camera frames, encodes them to JPEG via the native
+  # YuvJpegPlugin, and ships them to the server. We previously tried
+  # on-device MediaPipe Tasks + TFLite but the Tasks API uses a different
+  # hand model than mp.solutions.hands(model_complexity=0) which the
+  # classifier was trained on, causing accuracy regression.
 
   # Camera feed
   camera: ^0.11.3
   camera_android: ^0.10.9
   camera_platform_interface: ^2.8.0
+
+  # WebSocket client to the inference server
+  web_socket_channel: ^3.0.1
 
   # Urdu TTS
   flutter_tts: ^4.0.2

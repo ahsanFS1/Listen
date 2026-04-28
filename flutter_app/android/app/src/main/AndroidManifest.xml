@@ -1,13 +1,15 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Camera permission for live hand detection -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <!-- Required for hand_landmarker GPU delegate -->
+    <!-- Network access to reach the inference server over WebSocket -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />
 
     <application
         android:label="flutter_app"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
