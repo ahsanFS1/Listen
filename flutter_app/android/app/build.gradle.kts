@@ -39,6 +39,14 @@ android {
     }
 }
 
+dependencies {
+    // Native TFLite Java/Kotlin runtime — used by TfliteInferencePlugin.kt for LSTM inference.
+    // We don't use tflite_flutter for inference because its bundled LiteRT runtime can't load
+    // Select TF ops required by our model (FlexTensorListReserve from TensorList ops).
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.16.1")
+}
+
 flutter {
     source = "../.."
 }

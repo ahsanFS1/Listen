@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python *)"
+      "Bash(python *)",
+      "WebFetch(domain:pub.dev)",
+      "WebFetch(domain:github.com)",
+      "Bash(export PATH=\"$PATH:/opt/homebrew/Caskroom/flutter/3.41.7/flutter/bin\")",
+      "Bash(flutter pub:*)",
+      "Bash(flutter analyze:*)",
+      "Bash(/opt/homebrew/Caskroom/flutter/3.41.7/flutter/bin/flutter analyze:*)"
     ]
   }
 }
