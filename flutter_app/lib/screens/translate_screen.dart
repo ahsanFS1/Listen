@@ -3,12 +3,18 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
-import '../ml/hand_landmarker_native.dart';
 import '../ml/prediction.dart';
-import '../ml/sign_pipeline.dart';
+import '../ml/sign_client.dart';
+import '../ml/yuv_jpeg.dart';
 import '../theme/app_colors.dart';
 import '../widgets/confidence_bar_widget.dart';
 import '../widgets/state_pill.dart';
+
+// Inference server WebSocket. Override at run time with --dart-define=PSL_WS_URL=ws://<host>:8000/ws/translate
+const String _kDefaultWsUrl = String.fromEnvironment(
+  'PSL_WS_URL',
+  defaultValue: 'ws://10.0.2.2:8000/ws/translate',
+);
 
 class TranslateScreen extends StatefulWidget {
   const TranslateScreen({super.key});
@@ -24,15 +30,14 @@ class _TranslateScreenState extends State<TranslateScreen> {
   bool _cameraReady = false;
   bool _useFrontCamera = true;
 
-  // ── hand landmarker (native MediaPipe Tasks) ────────────────────────────
-  final _landmarker = HandLandmarkerNative();
-  bool _landmarkerReady = false;
+  // ── inference client (WebSocket → server) ──────────────────────────────
+  final SignClient _client = SignClient(url: _kDefaultWsUrl);
+  bool _serverReady = false;
+  StreamSubscription<Prediction>? _predSub;
+  StreamSubscription<Prediction>? _commitSub;
 
-  // ── pipeline (feature extraction + TFLite + FSM) ────────────────────────
-  final _pipeline = SignPipeline();
-
-  // ── throttle: skip frames while previous detection is running ───────────
-  bool _detecting = false;
+  // Throttle: drop frames if a JPEG encode is already in flight.
+  bool _encoding = false;
 
   // ── prediction ──────────────────────────────────────────────────────────
   final _pred = ValueNotifier<Prediction>(Prediction.idle);
@@ -59,8 +64,9 @@ class _TranslateScreenState extends State<TranslateScreen> {
   @override
   void dispose() {
     _stopCamera();
-    _landmarker.dispose();
-    _pipeline.dispose();
+    _predSub?.cancel();
+    _commitSub?.cancel();
+    _client.dispose();
     _pred.dispose();
     _tts.stop();
     super.dispose();
@@ -72,22 +78,26 @@ class _TranslateScreenState extends State<TranslateScreen> {
     _tts.setSpeechRate(0.5);
     _ttsReady = true;
 
-    // Init native MediaPipe HandLandmarker (GPU delegate)
+    // Connect to inference server
     try {
-      await _landmarker.init(numHands: 2, minConf: 0.5, useGpu: true);
-      _landmarkerReady = true;
-      debugPrint('PSL: native HandLandmarker initialized (GPU)');
+      await _client.connect();
+      _serverReady = true;
+      debugPrint('PSL: connected to $_kDefaultWsUrl');
     } catch (e) {
-      debugPrint('PSL: native HandLandmarker init FAILED: $e');
+      debugPrint('PSL: server connect FAILED: $e');
     }
 
-    // Init TFLite model
-    try {
-      await _pipeline.init();
-      debugPrint('PSL: TFLite model loaded');
-    } catch (e) {
-      debugPrint('PSL: TFLite init FAILED: $e');
-    }
+    _predSub = _client.predictions.listen((p) {
+      if (!mounted) return;
+      _pred.value = p;
+    });
+    _commitSub = _client.commits.listen((p) {
+      if (!mounted) return;
+      if (p.label.isEmpty || p.label == _lastCommitted) return;
+      _lastCommitted = p.label;
+      setState(() => _history.add((english: p.english, urdu: p.urdu)));
+      if (_ttsReady) _tts.speak(p.urdu);
+    });
 
     if (mounted) setState(() {});
   }
@@ -128,30 +138,20 @@ class _TranslateScreenState extends State<TranslateScreen> {
   }
 
   void _onCameraFrame(CameraImage image) async {
-    // Throttle: skip if previous detection still running
-    if (_detecting || !_landmarkerReady || !_pipeline.isReady) return;
-    _detecting = true;
+    // Drop if a JPEG encode is in flight, or the server already has its
+    // backpressure window full.
+    if (_encoding || !_client.isReady) return;
+    _encoding = true;
 
     try {
       final rotation = _camera?.description.sensorOrientation ?? 0;
-      final hands = await _landmarker.detect(image, rotation);
-
-      if (!mounted) return;
-
-      final prediction = _pipeline.process(hands);
-      _pred.value = prediction;
-
-      if (prediction.committed &&
-          prediction.label.isNotEmpty &&
-          prediction.label != _lastCommitted) {
-        _lastCommitted = prediction.label;
-        setState(() => _history.add((english: prediction.english, urdu: prediction.urdu)));
-        if (_ttsReady) _tts.speak(prediction.urdu);
-      }
+      final jpeg = await YuvJpeg.encode(image, rotation: rotation, quality: 70);
+      if (!mounted || jpeg == null) return;
+      _client.sendFrame(jpeg);
     } catch (e) {
-      debugPrint('PSL: Detection error: $e');
+      debugPrint('PSL: encode error: $e');
     } finally {
-      _detecting = false;
+      _encoding = false;
     }
   }
 
@@ -161,19 +161,24 @@ class _TranslateScreenState extends State<TranslateScreen> {
     _camera = null;
     _cameraOn = false;
     _cameraReady = false;
-    _detecting = false;
-    _pipeline.reset();
+    _encoding = false;
     _lastCommitted = null;
   }
 
   // ── actions ───────────────────────────────────────────────────────────
 
   void _onStart() async {
-    if (!_pipeline.isReady || !_landmarkerReady) {
+    if (!_serverReady || !_client.isReady) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Loading models, please wait…')),
+        const SnackBar(content: Text('Connecting to inference server… ($_kDefaultWsUrl)')),
       );
-      return;
+      // Retry connect lazily so a brief outage doesn't trap the UI.
+      try {
+        await _client.connect();
+        _serverReady = true;
+      } catch (_) {
+        return;
+      }
     }
     await _startCamera();
   }
@@ -436,10 +441,10 @@ class _TranslateScreenState extends State<TranslateScreen> {
   }
 
   Widget _buildPredictionPanel(Prediction p) {
-    final bufPct = _pipeline.bufferCapacity > 0
-        ? _pipeline.bufferFill / _pipeline.bufferCapacity
-        : 0.0;
-    final bufReady = _pipeline.bufferFill >= _pipeline.bufferCapacity;
+    const cap = SignClient.bufferCapacity;
+    final fill = _client.bufferFill;
+    final bufPct = cap > 0 ? fill / cap : 0.0;
+    final bufReady = fill >= cap;
 
     return Container(
       padding: const EdgeInsets.all(18),
@@ -470,7 +475,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
           const SizedBox(height: 10),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
             _label('CAPTURING MOTION'),
-            Text('${_pipeline.bufferFill}/${_pipeline.bufferCapacity}',
+            Text('$fill/$cap',
                 style: const TextStyle(color: AppColors.warn, fontWeight: FontWeight.w700, fontSize: 12)),
           ]),
           const SizedBox(height: 4),
