@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../ml/sign_pipeline.dart';
+import '../ml/prediction.dart';
 import '../theme/app_colors.dart';
 
 class StatePill extends StatefulWidget {

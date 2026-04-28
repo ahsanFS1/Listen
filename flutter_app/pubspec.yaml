@@ -11,14 +11,17 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
 
-  # MediaPipe HandLandmarker (JNI bridge to official Android SDK, Android-only)
+  # MediaPipe HandLandmarker (JNI bridge to official Android SDK)
   hand_landmarker: ^2.2.0
 
-  # TFLite inference — TensorFlow-maintained, supports arbitrary input shapes
-  tflite_flutter: ^0.12.1
+  # TFLite inference runs in a native Kotlin module (see android/.../TfliteInferencePlugin.kt)
+  # — needed because tflite_flutter's LiteRT runtime can't load Select TF ops
+  # required by our LSTM model (FlexTensorListReserve etc.).
 
-  # Camera feed (shared dependency with hand_landmarker)
+  # Camera feed
   camera: ^0.11.3
+  camera_android: ^0.10.9
+  camera_platform_interface: ^2.8.0
 
   # Urdu TTS
   flutter_tts: ^4.0.2

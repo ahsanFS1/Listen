@@ -1,164 +1,204 @@
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:hand_landmarker/hand_landmarker.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
 
 import '../data/signs.dart';
-import 'feature_extractor.dart';
-import 'rolling_buffer.dart';
+import 'prediction.dart';
 
-enum SignState { idle, signing, predicting, committed, cooldown }
-
-class Prediction {
-  final String label;
-  final String english;
-  final String urdu;
-  final double confidence;
-  final SignState state;
-  final bool committed;
-  final bool hasHands;
-
-  const Prediction({
-    required this.label,
-    required this.english,
-    required this.urdu,
-    required this.confidence,
-    required this.state,
-    required this.committed,
-    required this.hasHands,
-  });
-
-  static const Prediction idle = Prediction(
-    label: '', english: '—', urdu: '—',
-    confidence: 0, state: SignState.idle,
-    committed: false, hasHands: false,
-  );
-}
-
-/// Full on-device PSL sign recognition pipeline.
-///
-/// Mirrors the Python pipeline exactly:
-///   MediaPipe hands → 126-D vector → normalize → rolling buffer (60 frames)
-///   → motion gate → TFLite inference (every 3 frames) → EMA smoothing
-///   → FSM (IDLE→SIGNING→PREDICTING→COMMITTED→COOLDOWN)
 class SignPipeline {
-  static const int    _kStride        = 3;
-  static const double _kCommitConf    = 0.70;
-  static const double _kMotionMin     = 1e-4;
-  static const double _kEmaAlpha      = 0.60;
-  static const double _kCooldownSec   = 0.8;
+  static const int _kFrameDim = 126;
+  static const int _kBufCap = 60;      // model requires exactly 60 frames
+  static const int _kStride = 2;       // infer every 2 frames
+  static const double _kCommitConf = 0.65;
+  static const double _kEmaAlpha = 0.55;
+  static const double _kCooldownSec = 0.8;
+  static const int _kMissGrace = 5;    // tolerate 5 missed frames before reset
 
-  Interpreter? _interpreter;
+  static const MethodChannel _channel = MethodChannel('psl/tflite');
+
   bool _ready = false;
+  bool get isReady => _ready;
+  int _numClasses = 0;
 
-  final _buffer = RollingBuffer();
+  // Rolling buffer (circular)
+  final Float32List _buf = Float32List(_kBufCap * _kFrameDim);
+  int _wIdx = 0;
+  int _fill = 0;
+
+  // FSM
   SignState _state = SignState.idle;
   int _framesSinceInfer = 0;
   Float32List? _lastFrame;
   Float32List? _emaProbs;
   DateTime? _cooldownUntil;
+  int _missCount = 0;
+
+  // Reusable buffers
+  final Float32List _raw = Float32List(_kFrameDim);
+  final Float32List _norm = Float32List(_kFrameDim);
+  final Float32List _snap = Float32List(_kBufCap * _kFrameDim);
+
+  // Inference is async (MethodChannel) — guard against re-entry.
+  bool _inferInFlight = false;
 
   Prediction? _last;
 
-  bool get isReady => _ready;
-
-  // ── init ─────────────────────────────────────────────────────────────────
+  int get bufferFill => _fill;
+  int get bufferCapacity => _kBufCap;
 
   Future<void> init() async {
-    try {
-      final options = InterpreterOptions();
-      _interpreter = await Interpreter.fromAsset(
-        'assets/models/psl_word_classifier.tflite',
-        options: options,
-      );
-      _interpreter!.resizeInputTensor(0, [1, RollingBuffer.kCapacity, FeatureExtractor.kFrameDim]);
-      _interpreter!.allocateTensors();
-      _ready = true;
-    } catch (e) {
-      _ready = false;
-      rethrow;
-    }
+    final classes = await _channel.invokeMethod<int>('load', {
+      'assetPath': 'assets/models/psl_word_classifier.tflite',
+    });
+    _numClasses = classes ?? 0;
+    _ready = true;
+    debugPrint('PSL: native TFLite ready, classes=$_numClasses, buffer=$_kBufCap frames');
   }
 
-  void dispose() {
-    _interpreter?.close();
-    _interpreter = null;
+  Future<void> dispose() async {
     _ready = false;
-  }
-
-  // ── main entry point ─────────────────────────────────────────────────────
-
-  Prediction process(List<Hand> hands) {
-    if (!_ready) return Prediction.idle;
-
-    final hasHands = hands.isNotEmpty;
-
-    if (!hasHands) {
-      _buffer.reset();
-      _lastFrame = null;
-      _emaProbs  = null;
-      _state     = SignState.idle;
-      _last      = Prediction.idle;
-      return Prediction.idle;
-    }
-
-    final frame  = FeatureExtractor.extractAndNormalize(hands);
-    final motion = FeatureExtractor.computeMotion(_lastFrame, frame);
-    _lastFrame    = frame;
-    _buffer.push(frame);
-    _framesSinceInfer++;
-
-    // FSM transitions
-    final now = DateTime.now();
-    _updateFsm(hasHands, motion, now);
-
-    // Run inference when appropriate
-    if (_state == SignState.signing || _state == SignState.predicting) {
-      if (_buffer.isFull &&
-          _framesSinceInfer >= _kStride &&
-          motion > _kMotionMin) {
-        final result = _runInference();
-        _framesSinceInfer = 0;
-        if (result != null) {
-          final pred = _buildPrediction(result, now);
-          _last = pred;
-          return pred;
-        }
-      }
-    }
-
-    return _last ?? Prediction(
-      label: '', english: '—', urdu: '—',
-      confidence: 0, state: _state,
-      committed: false, hasHands: true,
-    );
+    try {
+      await _channel.invokeMethod('dispose');
+    } catch (_) {}
   }
 
   void reset() {
-    _buffer.reset();
-    _lastFrame = null;
-    _emaProbs  = null;
-    _state     = SignState.idle;
-    _last      = null;
+    _buf.fillRange(0, _buf.length, 0);
+    _wIdx = 0;
+    _fill = 0;
+    _state = SignState.idle;
     _framesSinceInfer = 0;
-    _cooldownUntil    = null;
+    _lastFrame = null;
+    _emaProbs = null;
+    _cooldownUntil = null;
+    _missCount = 0;
+    _last = null;
   }
 
-  // ── FSM ──────────────────────────────────────────────────────────────────
+  /// Process a frame. Returns the latest prediction synchronously; inference
+  /// itself runs asynchronously in the background and updates [_last] when done.
+  Prediction process(List<Hand> hands) {
+    if (!_ready) return Prediction.idle;
 
-  void _updateFsm(bool hasHands, double motion, DateTime now) {
+    if (hands.isEmpty) {
+      _missCount++;
+      if (_missCount >= _kMissGrace) {
+        reset();
+        return Prediction.idle;
+      }
+      return _last ?? Prediction.idle;
+    }
+    _missCount = 0;
+
+    _extractFeatures(hands);
+    _normalizeFeatures();
+    _lastFrame = Float32List.fromList(_norm);
+
+    final off = _wIdx * _kFrameDim;
+    for (int i = 0; i < _kFrameDim; i++) {
+      _buf[off + i] = _norm[i];
+    }
+    _wIdx = (_wIdx + 1) % _kBufCap;
+    if (_fill < _kBufCap) _fill++;
+    _framesSinceInfer++;
+
+    final now = DateTime.now();
+    _updateFsm(true, now);
+
+    if ((_state == SignState.signing || _state == SignState.predicting) &&
+        _fill >= _kBufCap &&
+        _framesSinceInfer >= _kStride &&
+        !_inferInFlight) {
+      _framesSinceInfer = 0;
+      _kickInference();
+    }
+
+    return _last ?? Prediction(
+      label: '', english: '\u2014', urdu: '\u2014',
+      confidence: 0, state: _state, committed: false, hasHands: true,
+    );
+  }
+
+  // ── Feature extraction ──────────────────────────────────────────────────
+
+  void _extractFeatures(List<Hand> hands) {
+    _raw.fillRange(0, _raw.length, 0);
+
+    if (hands.length == 1) {
+      final wristX = hands[0].landmarks[0].x;
+      if (wristX >= 0.5) {
+        _fillHand(0, hands[0]);
+      } else {
+        _fillHand(63, hands[0]);
+      }
+    } else {
+      final sorted = List<Hand>.from(hands)
+        ..sort((a, b) => b.landmarks[0].x.compareTo(a.landmarks[0].x));
+      _fillHand(0, sorted[0]);
+      _fillHand(63, sorted[1]);
+    }
+  }
+
+  void _fillHand(int offset, Hand hand) {
+    final lms = hand.landmarks;
+    for (int i = 0; i < 21 && i < lms.length; i++) {
+      final b = offset + i * 3;
+      _raw[b] = lms[i].x;
+      _raw[b + 1] = lms[i].y;
+      _raw[b + 2] = lms[i].z;
+    }
+  }
+
+  void _normalizeFeatures() {
+    for (int i = 0; i < _kFrameDim; i++) {
+      _norm[i] = _raw[i];
+    }
+
+    for (int h = 0; h < 2; h++) {
+      final s = h * 21 * 3;
+      final e = s + 21 * 3;
+
+      bool allZero = true;
+      for (int i = s; i < e; i++) {
+        if (_norm[i] != 0) { allZero = false; break; }
+      }
+      if (allZero) continue;
+
+      final wx = _norm[s], wy = _norm[s + 1], wz = _norm[s + 2];
+      for (int i = 0; i < 21; i++) {
+        final b = s + i * 3;
+        _norm[b] -= wx;
+        _norm[b + 1] -= wy;
+        _norm[b + 2] -= wz;
+      }
+
+      double mx = 0;
+      for (int i = s; i < e; i++) {
+        final v = _norm[i].abs();
+        if (v > mx) mx = v;
+      }
+      if (mx > 0) {
+        for (int i = s; i < e; i++) {
+          _norm[i] /= mx;
+        }
+      }
+    }
+  }
+
+  // ── FSM ─────────────────────────────────────────────────────────────────
+
+  void _updateFsm(bool hasHands, DateTime now) {
     switch (_state) {
       case SignState.idle:
-        if (hasHands && motion > _kMotionMin) {
-          _state = SignState.signing;
-        }
+        if (hasHands) _state = SignState.signing;
       case SignState.signing:
-        if (!hasHands && motion < _kMotionMin) {
+        if (!hasHands) {
           _state = SignState.idle;
         } else {
           _state = SignState.predicting;
         }
       case SignState.predicting:
-        // stays until inference commits or hands disappear
         break;
       case SignState.committed:
         _cooldownUntil = now.add(
@@ -168,86 +208,99 @@ class SignPipeline {
       case SignState.cooldown:
         if (_cooldownUntil != null && now.isAfter(_cooldownUntil!)) {
           _state = SignState.idle;
-          _buffer.reset();
+          _buf.fillRange(0, _buf.length, 0);
+          _wIdx = 0;
+          _fill = 0;
           _emaProbs = null;
         }
     }
   }
 
-  // ── inference ─────────────────────────────────────────────────────────────
+  // ── TFLite inference (native) ───────────────────────────────────────────
 
-  ({String label, double confidence})? _runInference() {
-    final interp = _interpreter;
-    if (interp == null) return null;
+  void _kickInference() {
+    _inferInFlight = true;
+    // Snapshot circular buffer into linear order [oldest..newest].
+    if (_fill < _kBufCap) {
+      final pad = (_kBufCap - _fill) * _kFrameDim;
+      _snap.fillRange(0, pad, 0);
+      for (int i = 0; i < _fill * _kFrameDim; i++) {
+        _snap[pad + i] = _buf[i];
+      }
+    } else {
+      final sOff = _wIdx * _kFrameDim;
+      final tail = _kBufCap * _kFrameDim - sOff;
+      for (int i = 0; i < tail; i++) {
+        _snap[i] = _buf[sOff + i];
+      }
+      for (int i = 0; i < sOff; i++) {
+        _snap[tail + i] = _buf[i];
+      }
+    }
 
-    final window = _buffer.snapshot();
-    // Shape [1, 60, 126]
-    final input = [
-      List.generate(RollingBuffer.kCapacity, (t) {
-        return List.generate(FeatureExtractor.kFrameDim, (f) {
-          return window[t * FeatureExtractor.kFrameDim + f];
-        });
-      }),
-    ];
+    // Pass features as raw bytes (native-order float32) — fastest MethodChannel
+    // path: typed-data lists are zero-copy on the platform side.
+    final bytes = _snap.buffer.asUint8List(_snap.offsetInBytes, _snap.lengthInBytes);
 
-    final output = [List.filled(kClassLabels.length, 0.0)];
-    interp.run(input, output);
+    _channel.invokeMethod<Float64List>('runInference', {
+      'features': bytes,
+    }).then((probs) {
+      _inferInFlight = false;
+      if (probs == null) return;
+      _onProbs(probs);
+    }).catchError((e) {
+      _inferInFlight = false;
+      debugPrint('PSL: inference error: $e');
+    });
+  }
 
-    final probs = Float32List.fromList(output[0].cast<double>());
-
-    // EMA smoothing
+  void _onProbs(Float64List probs) {
     if (_emaProbs == null) {
-      _emaProbs = probs;
+      _emaProbs = Float32List(probs.length);
+      for (int i = 0; i < probs.length; i++) {
+        _emaProbs![i] = probs[i];
+      }
     } else {
       for (int i = 0; i < probs.length; i++) {
         _emaProbs![i] = _kEmaAlpha * probs[i] + (1 - _kEmaAlpha) * _emaProbs![i];
       }
     }
 
-    // Argmax
     int topIdx = 0;
     double topConf = _emaProbs![0];
     for (int i = 1; i < _emaProbs!.length; i++) {
       if (_emaProbs![i] > topConf) {
         topConf = _emaProbs![i];
-        topIdx  = i;
+        topIdx = i;
       }
     }
 
-    return (label: kClassLabels[topIdx], confidence: topConf);
+    final label = topIdx < kClassLabels.length ? kClassLabels[topIdx] : '';
+    debugPrint('PSL: $label ${(topConf * 100).toStringAsFixed(1)}% fill=$_fill');
+    _last = _buildPrediction(label, topConf, DateTime.now());
   }
 
-  Prediction _buildPrediction(
-    ({String label, double confidence}) result,
-    DateTime now,
-  ) {
-    final label  = result.label;
-    final conf   = result.confidence;
-    final sign   = findSign(label);
-    final eng    = sign?.english ?? _prettify(label);
-    final urdu   = sign?.urdu    ?? label;
-    final isIdle = kIdleClasses.contains(label);
+  Prediction _buildPrediction(String label, double confidence, DateTime now) {
+    final sign = findSign(label);
+    final eng = sign?.english ?? label;
+    final urdu = sign?.urdu ?? label;
 
     bool committed = false;
-    if (!isIdle && conf >= _kCommitConf && _state != SignState.cooldown) {
+    if (!kIdleClasses.contains(label) &&
+        confidence >= _kCommitConf &&
+        _state != SignState.cooldown) {
       committed = true;
-      _state    = SignState.committed;
+      _state = SignState.committed;
     }
 
     return Prediction(
-      label:     label,
-      english:   eng,
-      urdu:      urdu,
-      confidence: conf,
-      state:     _state,
+      label: label,
+      english: eng,
+      urdu: urdu,
+      confidence: confidence,
+      state: _state,
       committed: committed,
-      hasHands:  true,
+      hasHands: true,
     );
   }
-
-  static String _prettify(String id) =>
-      id.replaceAll('_', ' ')
-        .split(' ')
-        .map((w) => w.isEmpty ? w : '${w[0].toUpperCase()}${w.substring(1)}')
-        .join(' ');
 }
