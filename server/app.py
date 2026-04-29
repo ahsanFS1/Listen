@@ -1,7 +1,7 @@
 """FastAPI WebSocket server for PSL recognition.
 
 Protocol:
-- Client connects to /ws/translate
+- Client connects to /ws/translate?mode=words (default) or ?mode=alphabets
 - Each frame: send the JPEG bytes as a binary WebSocket message
 - Server replies with a JSON text message describing pipeline state
 """
@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from sign_session import SignSession, _ensure_model_loaded
+from alphabet_session import AlphabetSession, _ensure_alpha_model_loaded
 
 log = logging.getLogger("psl.server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -23,8 +24,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Eager-load model so the first connection isn't slow.
+    # Eager-load both models so the first connection isn't slow.
     _ensure_model_loaded()
+    try:
+        _ensure_alpha_model_loaded()
+    except Exception as exc:
+        log.warning("alphabet model not loaded: %s", exc)
     yield
 
 
@@ -39,8 +44,13 @@ async def healthz() -> dict:
 @app.websocket("/ws/translate")
 async def ws_translate(ws: WebSocket) -> None:
     await ws.accept()
-    log.info("ws connected: %s", ws.client)
-    session = SignSession()
+    mode = (ws.query_params.get("mode") or "words").lower()
+    if mode == "alphabets":
+        session = AlphabetSession()
+    else:
+        mode = "words"
+        session = SignSession()
+    log.info("ws connected: %s mode=%s", ws.client, mode)
     try:
         while True:
             msg = await ws.receive()
@@ -49,15 +59,13 @@ async def ws_translate(ws: WebSocket) -> None:
 
             data = msg.get("bytes")
             if data is None:
-                # Ignore text control frames for now; protocol is binary-only.
                 text = msg.get("text")
                 if text == "ping":
                     await ws.send_text(json.dumps({"pong": True}))
                 continue
 
-            # Run the heavy pipeline on a worker thread so the event loop
-            # stays free to read the next frame.
             snapshot = await asyncio.to_thread(session.process_jpeg, data)
+            snapshot["mode"] = mode
             await ws.send_text(json.dumps(snapshot))
     except WebSocketDisconnect:
         log.info("ws disconnected: %s", ws.client)

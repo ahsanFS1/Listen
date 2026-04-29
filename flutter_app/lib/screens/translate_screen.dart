@@ -13,7 +13,7 @@ import '../widgets/state_pill.dart';
 // Inference server WebSocket. Override at run time with --dart-define=PSL_WS_URL=ws://<host>:8000/ws/translate
 const String _kDefaultWsUrl = String.fromEnvironment(
   'PSL_WS_URL',
-  defaultValue: 'ws://10.0.2.2:8000/ws/translate',
+  defaultValue: 'ws://172.20.10.2:8000/ws/translate',
 );
 
 class TranslateScreen extends StatefulWidget {
@@ -31,10 +31,13 @@ class _TranslateScreenState extends State<TranslateScreen> {
   bool _useFrontCamera = true;
 
   // ── inference client (WebSocket → server) ──────────────────────────────
-  final SignClient _client = SignClient(url: _kDefaultWsUrl);
+  SignMode _mode = SignMode.words;
+  SignClient _client = SignClient(url: _kDefaultWsUrl, mode: SignMode.words);
   bool _serverReady = false;
+  String? _connectError;
   StreamSubscription<Prediction>? _predSub;
   StreamSubscription<Prediction>? _commitSub;
+  StreamSubscription<String?>? _errSub;
 
   // Throttle: drop frames if a JPEG encode is already in flight.
   bool _encoding = false;
@@ -49,6 +52,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
   // ── TTS ──────────────────────────────────────────────────────────────
   final FlutterTts _tts = FlutterTts();
   bool _ttsReady = false;
+  String? _ttsLang;
 
   // ── UI ───────────────────────────────────────────────────────────────
   bool _showHistory = false;
@@ -66,6 +70,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
     _stopCamera();
     _predSub?.cancel();
     _commitSub?.cancel();
+    _errSub?.cancel();
     _client.dispose();
     _pred.dispose();
     _tts.stop();
@@ -73,32 +78,128 @@ class _TranslateScreenState extends State<TranslateScreen> {
   }
 
   Future<void> _initAll() async {
-    // Init TTS
-    _tts.setLanguage('ur-PK');
-    _tts.setSpeechRate(0.5);
-    _ttsReady = true;
+    await _initTts();
 
     // Connect to inference server
     try {
       await _client.connect();
       _serverReady = true;
+      _connectError = null;
       debugPrint('PSL: connected to $_kDefaultWsUrl');
     } catch (e) {
+      _connectError = '$e';
       debugPrint('PSL: server connect FAILED: $e');
     }
 
+    _wireClientStreams();
+
+    if (mounted) setState(() {});
+  }
+
+  void _wireClientStreams() {
+    _predSub?.cancel();
+    _commitSub?.cancel();
+    _errSub?.cancel();
+    _errSub = _client.errors.listen((err) {
+      if (!mounted) return;
+      setState(() {
+        _serverReady = err == null ? _serverReady : false;
+        _connectError = err;
+      });
+    });
     _predSub = _client.predictions.listen((p) {
       if (!mounted) return;
       _pred.value = p;
     });
     _commitSub = _client.commits.listen((p) {
       if (!mounted) return;
-      if (p.label.isEmpty || p.label == _lastCommitted) return;
+      if (p.label.isEmpty) return;
+      // Alphabets: each commit is a letter — append every time, even
+      // when the letter repeats (double letters are valid).
+      // Words: dedupe back-to-back commits of the same word.
+      if (_mode == SignMode.words && p.label == _lastCommitted) return;
       _lastCommitted = p.label;
       setState(() => _history.add((english: p.english, urdu: p.urdu)));
-      if (_ttsReady) _tts.speak(p.urdu);
+      _speak(p.urdu);
     });
+  }
 
+  // Pick the first language the device's TTS engine actually has installed.
+  // Samsung devices often don't ship ur-PK; fall back through Urdu variants
+  // and finally Hindi/English so the Speak button always works.
+  Future<void> _initTts() async {
+    try {
+      _tts.setErrorHandler((msg) => debugPrint('PSL: tts error: $msg'));
+      // Samsung devices default to com.samsung.SMT which has no Urdu/Hindi
+      // voice data, so utterances "complete" silently. Force Google TTS
+      // (com.google.android.tts) when available — it ships Urdu+Hindi.
+      try {
+        final engines = await _tts.getEngines;
+        debugPrint('PSL: tts engines=$engines');
+        if (engines is List && engines.contains('com.google.android.tts')) {
+          await _tts.setEngine('com.google.android.tts');
+          debugPrint('PSL: tts engine set to com.google.android.tts');
+        }
+      } catch (e) {
+        debugPrint('PSL: tts engine select skipped: $e');
+      }
+      await _tts.setSpeechRate(0.45);
+      await _tts.setPitch(1.0);
+      const candidates = ['ur-PK', 'ur-IN', 'ur', 'hi-IN', 'en-IN', 'en-US'];
+      for (final lang in candidates) {
+        final available = await _tts.isLanguageAvailable(lang);
+        if (available == true) {
+          await _tts.setLanguage(lang);
+          _ttsLang = lang;
+          break;
+        }
+      }
+      _ttsLang ??= 'en-US';
+      await _tts.setLanguage(_ttsLang!);
+      _ttsReady = true;
+      debugPrint('PSL: tts ready, engine=google, language=$_ttsLang');
+    } catch (e) {
+      debugPrint('PSL: tts init failed: $e');
+      _ttsReady = false;
+    }
+  }
+
+  Future<void> _speak(String text) async {
+    if (text.isEmpty || text == '\u2014') return;
+    if (!_ttsReady) {
+      await _initTts();
+      if (!_ttsReady) return;
+    }
+    try {
+      await _tts.stop();
+      final r = await _tts.speak(text);
+      debugPrint('PSL: tts.speak("$text") → $r');
+    } catch (e) {
+      debugPrint('PSL: tts speak failed: $e');
+    }
+  }
+
+  Future<void> _switchMode(SignMode next) async {
+    if (next == _mode) return;
+    final wasOn = _cameraOn;
+    _stopCamera();
+    setState(() {
+      _mode = next;
+      _history.clear();
+      _lastCommitted = null;
+      _pred.value = Prediction.idle;
+      _serverReady = false;
+    });
+    await _client.dispose();
+    _client = SignClient(url: _kDefaultWsUrl, mode: next);
+    _wireClientStreams();
+    try {
+      await _client.connect();
+      _serverReady = true;
+    } catch (e) {
+      debugPrint('PSL: switch-mode connect failed: $e');
+    }
+    if (wasOn) await _startCamera();
     if (mounted) setState(() {});
   }
 
@@ -201,12 +302,13 @@ class _TranslateScreenState extends State<TranslateScreen> {
 
   void _onSpeak() {
     final p = _pred.value;
-    if (p.hasHands && p.urdu != '\u2014') _tts.speak(p.urdu);
+    if (p.hasHands && p.urdu != '\u2014') _speak(p.urdu);
   }
 
   void _onSpeakSentence() {
     if (_history.isEmpty) return;
-    _tts.speak(_history.map((h) => h.urdu).join(' '));
+    final sep = _mode == SignMode.alphabets ? '' : ' ';
+    _speak(_history.map((h) => h.urdu).join(sep));
   }
 
   // ── build ─────────────────────────────────────────────────────────────
@@ -226,14 +328,20 @@ class _TranslateScreenState extends State<TranslateScreen> {
                   children: [
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-                      child: Center(
-                        child: ValueListenableBuilder<Prediction>(
-                          valueListenable: _pred,
-                          builder: (_, p, __) => StatePill(
-                            state: p.state, hasHands: p.hasHands, cameraOn: _cameraOn,
+                      child: Column(children: [
+                        _buildModeToggle(),
+                        const SizedBox(height: 10),
+                        if (!_serverReady) _buildConnBanner(),
+                        if (!_serverReady) const SizedBox(height: 10),
+                        Center(
+                          child: ValueListenableBuilder<Prediction>(
+                            valueListenable: _pred,
+                            builder: (_, p, __) => StatePill(
+                              state: p.state, hasHands: p.hasHands, cameraOn: _cameraOn,
+                            ),
                           ),
                         ),
-                      ),
+                      ]),
                     ),
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 18),
@@ -441,7 +549,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
   }
 
   Widget _buildPredictionPanel(Prediction p) {
-    const cap = SignClient.bufferCapacity;
+    final cap = _client.bufferCapacity;
     final fill = _client.bufferFill;
     final bufPct = cap > 0 ? fill / cap : 0.0;
     final bufReady = fill >= cap;
@@ -474,7 +582,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
         if (p.hasHands && !bufReady) ...[
           const SizedBox(height: 10),
           Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            _label('CAPTURING MOTION'),
+            _label(_mode == SignMode.alphabets ? 'HOLD STEADY' : 'CAPTURING MOTION'),
             Text('$fill/$cap',
                 style: const TextStyle(color: AppColors.warn, fontWeight: FontWeight.w700, fontSize: 12)),
           ]),
@@ -489,8 +597,11 @@ class _TranslateScreenState extends State<TranslateScreen> {
             ),
           ),
           const SizedBox(height: 4),
-          Text('Sign naturally — the model watches the last 2 seconds.',
-              style: TextStyle(color: AppColors.warn.withAlpha(180), fontSize: 11)),
+          Text(
+            _mode == SignMode.alphabets
+                ? 'Hold the letter steady to commit it.'
+                : 'Sign naturally — the model watches the last 2 seconds.',
+            style: TextStyle(color: AppColors.warn.withAlpha(180), fontSize: 11)),
         ],
         const SizedBox(height: 14),
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
@@ -546,8 +657,10 @@ class _TranslateScreenState extends State<TranslateScreen> {
   );
 
   Widget _buildSentenceStrip() {
-    final sentence = _history.map((h) => h.urdu).join(' ');
-    final english = _history.map((h) => h.english).join(' ');
+    final sep = _mode == SignMode.alphabets ? '' : ' ';
+    final engSep = _mode == SignMode.alphabets ? '' : ' ';
+    final sentence = _history.map((h) => h.urdu).join(sep);
+    final english = _history.map((h) => h.english).join(engSep);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -611,4 +724,99 @@ class _TranslateScreenState extends State<TranslateScreen> {
 
   Widget _label(String text) => Text(text, style: const TextStyle(
       color: AppColors.textDim, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 1.6));
+
+  Future<void> _retryConnect() async {
+    setState(() => _connectError = null);
+    try {
+      await _client.connect();
+      if (!mounted) return;
+      setState(() {
+        _serverReady = true;
+        _connectError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _connectError = '$e');
+    }
+  }
+
+  Widget _buildConnBanner() => Container(
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: AppColors.bgCard,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: AppColors.warn.withAlpha(120)),
+    ),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        const Icon(Icons.cloud_off, color: AppColors.warn, size: 16),
+        const SizedBox(width: 6),
+        const Text('Inference server unreachable',
+            style: TextStyle(color: AppColors.text, fontWeight: FontWeight.w700, fontSize: 13)),
+        const Spacer(),
+        GestureDetector(
+          onTap: _retryConnect,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppColors.accent,
+              borderRadius: BorderRadius.circular(999)),
+            child: const Text('Retry', style: TextStyle(
+                color: Color(0xFF0B1020), fontWeight: FontWeight.w700, fontSize: 11)),
+          ),
+        ),
+      ]),
+      const SizedBox(height: 6),
+      const Text('URL: $_kDefaultWsUrl',
+          style: TextStyle(color: AppColors.textDim, fontSize: 11)),
+      if (_connectError != null) ...[
+        const SizedBox(height: 4),
+        Text(_connectError!,
+            style: const TextStyle(color: AppColors.warn, fontSize: 11)),
+      ],
+      const SizedBox(height: 4),
+      const Text(
+        'On a real device set --dart-define=PSL_WS_URL=ws://<your-mac-LAN-IP>:8000/ws/translate, or run `adb reverse tcp:8000 tcp:8000` over USB.',
+        style: TextStyle(color: AppColors.textDim, fontSize: 11, height: 1.4)),
+    ]),
+  );
+
+  Widget _buildModeToggle() {
+    Widget seg(String label, IconData icon, SignMode m) {
+      final active = _mode == m;
+      return Expanded(
+        child: GestureDetector(
+          onTap: () => _switchMode(m),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            height: 38,
+            decoration: BoxDecoration(
+              color: active ? AppColors.accent : Colors.transparent,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(icon, size: 16,
+                  color: active ? const Color(0xFF0B1020) : AppColors.textDim),
+              const SizedBox(width: 6),
+              Text(label, style: TextStyle(
+                color: active ? const Color(0xFF0B1020) : AppColors.textDim,
+                fontWeight: FontWeight.w700, fontSize: 13, letterSpacing: 0.5)),
+            ]),
+          ),
+        ),
+      );
+    }
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: AppColors.bgSoft,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(children: [
+        seg('Words', Icons.menu_book_outlined, SignMode.words),
+        seg('Alphabets', Icons.abc, SignMode.alphabets),
+      ]),
+    );
+  }
 }

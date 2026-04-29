@@ -7,15 +7,24 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../data/signs.dart';
 import 'prediction.dart';
 
+enum SignMode { words, alphabets }
+
 /// Streams JPEG frames to the inference server and surfaces the latest
 /// prediction. API mirrors the old on-device SignPipeline so the UI
 /// layer doesn't need to change.
 class SignClient {
-  SignClient({required this.url});
+  SignClient({required this.url, this.mode = SignMode.words});
 
-  /// e.g. `ws://192.168.1.5:8000/ws/translate` for a phone on the same
-  /// LAN as the dev machine.
+  /// Base URL e.g. `ws://192.168.1.5:8000/ws/translate`. The `?mode=`
+  /// query is appended automatically.
   final String url;
+  final SignMode mode;
+
+  String get _connectUrl {
+    final m = mode == SignMode.alphabets ? 'alphabets' : 'words';
+    final sep = url.contains('?') ? '&' : '?';
+    return '$url${sep}mode=$m';
+  }
 
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
@@ -32,7 +41,8 @@ class SignClient {
   int _bufferFill = 0;
   int get bufferFill => _bufferFill;
 
-  static const int bufferCapacity = 60;
+  int _bufferCapacity = 60;
+  int get bufferCapacity => _bufferCapacity;
 
   Prediction _last = Prediction.idle;
   Prediction get last => _last;
@@ -45,22 +55,46 @@ class SignClient {
   final _commits = StreamController<Prediction>.broadcast();
   Stream<Prediction> get commits => _commits.stream;
 
+  // Surfaces "the WS just dropped / errored" so the UI can show it.
+  // Strings are user-readable error messages; null means a clean close.
+  final _errors = StreamController<String?>.broadcast();
+  Stream<String?> get errors => _errors.stream;
+  String? _lastError;
+  String? get lastError => _lastError;
+
   Future<void> connect() async {
-    final ch = WebSocketChannel.connect(Uri.parse(url));
-    _channel = ch;
-    _sub = ch.stream.listen(
-      _onMessage,
-      onError: (e, st) {
-        debugPrint('PSL: ws error: $e');
-        _ready = false;
-      },
-      onDone: () {
-        debugPrint('PSL: ws closed');
-        _ready = false;
-      },
-      cancelOnError: true,
-    );
-    _ready = true;
+    debugPrint('PSL: connecting → $_connectUrl');
+    try {
+      final ch = WebSocketChannel.connect(Uri.parse(_connectUrl));
+      _channel = ch;
+      // ready() throws synchronously inside the listener if the handshake
+      // fails — listen routes both the failure and any later disconnects
+      // into _errors so the UI can react.
+      _sub = ch.stream.listen(
+        _onMessage,
+        onError: (e, st) {
+          final msg = 'WS error: $e';
+          debugPrint('PSL: $msg');
+          _lastError = msg;
+          _ready = false;
+          if (!_errors.isClosed) _errors.add(msg);
+        },
+        onDone: () {
+          debugPrint('PSL: ws closed');
+          _ready = false;
+          if (!_errors.isClosed) _errors.add(null);
+        },
+        cancelOnError: true,
+      );
+      _ready = true;
+      _lastError = null;
+    } catch (e) {
+      _ready = false;
+      _lastError = 'WS connect failed: $e';
+      debugPrint('PSL: ${_lastError!}');
+      if (!_errors.isClosed) _errors.add(_lastError);
+      rethrow;
+    }
   }
 
   Future<void> dispose() async {
@@ -71,6 +105,7 @@ class SignClient {
     _channel = null;
     await _controller.close();
     await _commits.close();
+    await _errors.close();
   }
 
   /// Send a JPEG frame to the server. Drops the frame if the server
@@ -108,6 +143,7 @@ class SignClient {
     final committed = (j['committed'] as bool?) ?? false;
     final hasHands = (j['hasHands'] as bool?) ?? false;
     _bufferFill = (j['bufferFill'] as num?)?.toInt() ?? _bufferFill;
+    _bufferCapacity = (j['bufferCapacity'] as num?)?.toInt() ?? _bufferCapacity;
 
     final p = Prediction(
       label: label,
