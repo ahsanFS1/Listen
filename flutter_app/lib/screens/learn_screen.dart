@@ -1,6 +1,30 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../data/signs.dart';
 import '../theme/app_colors.dart';
+
+Future<void> openPslUrl(BuildContext context, String url) async {
+  final uri = Uri.parse(url);
+  bool ok;
+  try {
+    ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+  } catch (_) {
+    ok = false;
+  }
+  if (!ok) {
+    // Fallback: let the platform pick (in-app webview, custom tab, etc.)
+    try {
+      ok = await launchUrl(uri);
+    } catch (_) {
+      ok = false;
+    }
+  }
+  if (!ok && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Could not open ${uri.toString()}')),
+    );
+  }
+}
 
 class LearnScreen extends StatefulWidget {
   const LearnScreen({super.key});
@@ -204,25 +228,33 @@ class _CategoryCardState extends State<_CategoryCard> {
               child: Wrap(
                 spacing: 8, runSpacing: 8,
                 children: widget.signs
-                    .map((s) => Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: AppColors.bgSoft,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: AppColors.border),
-                          ),
-                          child: Column(
-                            children: [
-                              Text(s.english,
-                                  style: const TextStyle(
-                                      color: AppColors.text, fontSize: 12,
-                                      fontWeight: FontWeight.w600)),
-                              Text(s.urdu,
-                                  textDirection: TextDirection.rtl,
-                                  style: const TextStyle(
-                                      color: AppColors.accent, fontSize: 13)),
-                            ],
+                    .map((s) => GestureDetector(
+                          onTap: () => openPslUrl(context, s.pslUrl),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: AppColors.bgSoft,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: AppColors.border),
+                            ),
+                            child: Column(
+                              children: [
+                                Row(mainAxisSize: MainAxisSize.min, children: [
+                                  Text(s.english,
+                                      style: const TextStyle(
+                                          color: AppColors.text, fontSize: 12,
+                                          fontWeight: FontWeight.w600)),
+                                  const SizedBox(width: 4),
+                                  const Icon(Icons.open_in_new,
+                                      color: AppColors.textDim, size: 11),
+                                ]),
+                                Text(s.urdu,
+                                    textDirection: TextDirection.rtl,
+                                    style: const TextStyle(
+                                        color: AppColors.accent, fontSize: 13)),
+                              ],
+                            ),
                           ),
                         ))
                     .toList(),

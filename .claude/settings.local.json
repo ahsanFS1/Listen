@@ -7,7 +7,31 @@
       "Bash(export PATH=\"$PATH:/opt/homebrew/Caskroom/flutter/3.41.7/flutter/bin\")",
       "Bash(flutter pub:*)",
       "Bash(flutter analyze:*)",
-      "Bash(/opt/homebrew/Caskroom/flutter/3.41.7/flutter/bin/flutter analyze:*)"
+      "Bash(/opt/homebrew/Caskroom/flutter/3.41.7/flutter/bin/flutter analyze:*)",
+      "Bash(curl -s \"https://psl.org.pk/dictionary\")",
+      "Bash(curl -s \"https://psl.org.pk/dictionary/word/hello\")",
+      "Bash(curl -s \"https://psl.org.pk/dictionary/word/hello\" -L)",
+      "Bash(curl -sI \"https://psl.org.pk/dictionary/word/hello\")",
+      "Bash(xargs kill *)",
+      "Bash(curl -sS -o /dev/null -w '%{http_code}' https://psl.org.pk/dictionary/word/__TRACKED_VAR__)",
+      "Bash(curl -sS \"https://psl.org.pk/sitemap.xml\")",
+      "Bash(curl -sS \"https://psl.org.pk/api/categories\")",
+      "Bash(curl -sS -L \"https://psl.org.pk/dictionary/1-alphabet\")",
+      "Bash(adb devices *)",
+      "Bash(lsof -i :8000 -sTCP:LISTEN)",
+      "Bash(/Users/ahmadaslam/Library/Android/sdk/platform-tools/adb reverse *)",
+      "Bash(curl -sS http://127.0.0.1:8000/healthz)",
+      "Bash(flutter run *)",
+      "Bash(echo \"flutter run pid=$!\")",
+      "Bash(/Users/ahmadaslam/Library/Android/sdk/platform-tools/adb logcat *)",
+      "Bash(adb reverse *)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb reverse *)",
+      "Bash(~/Library/Android/sdk/platform-tools/adb devices *)",
+      "Bash(curl *)",
+      "Bash(kill 57909)",
+      "Bash(grep -vE \"^\\\\s*$\")",
+      "Bash(~/Library/Android/sdk/platform-tools/adb shell *)",
+      "Bash(pkill -f \"flutter run\")"
     ]
   }
 }
