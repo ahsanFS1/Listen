@@ -3,9 +3,8 @@ import 'package:flutter/material.dart';
 import '../data/alphabets.dart';
 import '../data/signs.dart';
 import '../theme/app_colors.dart';
-import 'learn_screen.dart' show openPslUrl;
-
-const String _kPslDictionaryHome = 'https://psl.org.pk/dictionary';
+import 'learn_screen.dart' show openSignVideo;
+import 'letter_video_screen.dart';
 
 class DictionaryScreen extends StatefulWidget {
   const DictionaryScreen({super.key});
@@ -61,41 +60,17 @@ class _DictionaryScreenState extends State<DictionaryScreen>
     );
   }
 
-  Widget _buildHeader() => Padding(
-        padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
-        child: Row(children: [
-          const Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Dictionary',
-                  style: TextStyle(
-                      color: AppColors.text,
-                      fontSize: 26,
-                      fontWeight: FontWeight.w800)),
-              SizedBox(height: 2),
-              Text('Powered by psl.org.pk',
-                  style: TextStyle(color: AppColors.textDim, fontSize: 12)),
-            ]),
-          ),
-          GestureDetector(
-            onTap: () => openPslUrl(context, _kPslDictionaryHome),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: AppColors.bgSoft,
-                borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Icons.open_in_new, color: AppColors.accent, size: 14),
-                SizedBox(width: 6),
-                Text('PSL Site',
-                    style: TextStyle(
-                        color: AppColors.accent,
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700)),
-              ]),
-            ),
-          ),
+  Widget _buildHeader() => const Padding(
+        padding: EdgeInsets.fromLTRB(18, 16, 18, 8),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Dictionary',
+              style: TextStyle(
+                  color: AppColors.text,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w800)),
+          SizedBox(height: 2),
+          Text('Tap a word to watch its sign',
+              style: TextStyle(color: AppColors.textDim, fontSize: 12)),
         ]),
       );
 
@@ -184,7 +159,8 @@ class _WordsList extends StatelessWidget {
           left: s.english,
           right: s.urdu,
           subtitle: s.category,
-          onTap: () => openPslUrl(ctx, s.pslUrl),
+          icon: Icons.play_circle_outline,
+          onTap: () => openSignVideo(ctx, s),
         );
       },
     );
@@ -201,7 +177,7 @@ class _AlphabetsList extends StatelessWidget {
     final items = kPslLetters
         .where((l) =>
             q.isEmpty ||
-            l.name.toLowerCase().contains(q) ||
+            (l.name?.toLowerCase().contains(q) ?? false) ||
             l.roman.toLowerCase().contains(q) ||
             l.urdu.contains(q))
         .toList();
@@ -224,7 +200,9 @@ class _AlphabetsList extends StatelessWidget {
       itemBuilder: (ctx, i) {
         final l = items[i];
         return GestureDetector(
-          onTap: () => openPslUrl(ctx, l.pslUrl),
+          onTap: () => Navigator.of(ctx).push(MaterialPageRoute(
+            builder: (_) => LetterVideoScreen(letter: l),
+          )),
           child: Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
@@ -260,12 +238,14 @@ class _DictRow extends StatelessWidget {
   final String left;
   final String right;
   final String? subtitle;
+  final IconData icon;
   final VoidCallback onTap;
   const _DictRow({
     required this.left,
     required this.right,
     required this.onTap,
     this.subtitle,
+    this.icon = Icons.open_in_new,
   });
 
   @override
@@ -306,8 +286,7 @@ class _DictRow extends StatelessWidget {
                     fontSize: 18,
                     fontWeight: FontWeight.w700)),
             const SizedBox(width: 10),
-            const Icon(Icons.open_in_new,
-                color: AppColors.textDim, size: 16),
+            Icon(icon, color: AppColors.textDim, size: 16),
           ],
         ),
       ),

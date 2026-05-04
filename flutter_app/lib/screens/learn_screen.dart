@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
-import '../data/signs.dart';
-import '../theme/app_colors.dart';
 
+import '../data/signs.dart';
+import '../services/progress_service.dart';
+import '../theme/app_colors.dart';
+import 'quiz_screen.dart';
+import 'word_video_screen.dart';
+
+/// Kept around because the alphabet screen still launches PSL Dictionary
+/// for letter videos (no .mp4 bundle for letters yet). Word taps now use
+/// the in-app video player instead.
 Future<void> openPslUrl(BuildContext context, String url) async {
   final uri = Uri.parse(url);
   bool ok;
@@ -12,7 +19,6 @@ Future<void> openPslUrl(BuildContext context, String url) async {
     ok = false;
   }
   if (!ok) {
-    // Fallback: let the platform pick (in-app webview, custom tab, etc.)
     try {
       ok = await launchUrl(uri);
     } catch (_) {
@@ -26,6 +32,12 @@ Future<void> openPslUrl(BuildContext context, String url) async {
   }
 }
 
+void openSignVideo(BuildContext context, SignInfo s) {
+  Navigator.of(context).push(MaterialPageRoute(
+    builder: (_) => WordVideoScreen(sign: s),
+  ));
+}
+
 class LearnScreen extends StatefulWidget {
   const LearnScreen({super.key});
 
@@ -35,6 +47,12 @@ class LearnScreen extends StatefulWidget {
 
 class _LearnScreenState extends State<LearnScreen> {
   String _search = '';
+
+  @override
+  void initState() {
+    super.initState();
+    ProgressService.instance.load();
+  }
 
   Map<String, List<SignInfo>> get _grouped {
     final filtered = kSigns
@@ -74,7 +92,6 @@ class _LearnScreenState extends State<LearnScreen> {
                       style:
                           TextStyle(color: AppColors.textDim, fontSize: 13)),
                   const SizedBox(height: 16),
-                  // Search bar
                   Container(
                     height: 44,
                     decoration: BoxDecoration(
@@ -96,8 +113,9 @@ class _LearnScreenState extends State<LearnScreen> {
                     ),
                   ),
                   const SizedBox(height: 16),
-                  // Progress summary
-                  _buildProgressCard(grouped),
+                  _buildProgressCard(),
+                  const SizedBox(height: 12),
+                  _buildQuizCta(),
                   const SizedBox(height: 8),
                 ],
               ),
@@ -123,32 +141,89 @@ class _LearnScreenState extends State<LearnScreen> {
     );
   }
 
-  Widget _buildProgressCard(Map<String, List<SignInfo>> grouped) {
-    final total = kSigns.length;
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.bgCard,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        children: [
-          const _CircleProgress(fraction: 0.0),
-          const SizedBox(width: 14),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildProgressCard() {
+    return AnimatedBuilder(
+      animation: ProgressService.instance,
+      builder: (_, __) {
+        final p = ProgressService.instance;
+        return Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppColors.bgCard,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Row(
             children: [
-              const Text('Overall Progress',
-                  style: TextStyle(
-                      color: AppColors.text, fontWeight: FontWeight.w700)),
-              const SizedBox(height: 2),
-              Text('0 / $total Signs',
-                  style: const TextStyle(
-                      color: AppColors.textDim, fontSize: 13)),
+              _CircleProgress(fraction: p.fraction),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Overall Progress',
+                        style: TextStyle(
+                            color: AppColors.text,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 2),
+                    Text('${p.learnedCount} / ${p.total} Signs',
+                        style: const TextStyle(
+                            color: AppColors.textDim, fontSize: 13)),
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(999),
+                      child: LinearProgressIndicator(
+                        value: p.fraction,
+                        minHeight: 6,
+                        backgroundColor: AppColors.bgSoft,
+                        valueColor:
+                            const AlwaysStoppedAnimation(AppColors.accent),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
-        ],
+        );
+      },
+    );
+  }
+
+  Widget _buildQuizCta() {
+    return GestureDetector(
+      onTap: () => Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => const QuizScreen(),
+      )),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF06b6d4), Color(0xFF3b82f6)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: const Row(children: [
+          Icon(Icons.quiz_outlined, color: Colors.white),
+          SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Take the 5-Sign Quiz',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15)),
+                Text('Sign 5 prompts in front of the camera',
+                    style: TextStyle(color: Colors.white70, fontSize: 12)),
+              ],
+            ),
+          ),
+          Icon(Icons.chevron_right, color: Colors.white),
+        ]),
       ),
     );
   }
@@ -171,114 +246,140 @@ class _CategoryCardState extends State<_CategoryCard> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      decoration: BoxDecoration(
-        color: AppColors.bgCard,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        children: [
-          GestureDetector(
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  Container(
-                    width: 42, height: 42,
-                    decoration: BoxDecoration(
-                      color: AppColors.bgSoft,
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: AppColors.border),
-                    ),
-                    child: Icon(_categoryIcon(widget.category),
-                        color: AppColors.accent, size: 20),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(_title,
-                            style: const TextStyle(
-                                color: AppColors.text,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 15)),
-                        Text('${widget.signs.length} signs',
-                            style: const TextStyle(
-                                color: AppColors.textDim, fontSize: 12)),
-                      ],
-                    ),
-                  ),
-                  Icon(
-                    _expanded
-                        ? Icons.keyboard_arrow_up
-                        : Icons.keyboard_arrow_down,
-                    color: AppColors.textDim,
-                  ),
-                ],
-              ),
-            ),
+    return AnimatedBuilder(
+      animation: ProgressService.instance,
+      builder: (_, __) {
+        final learnedInGroup = widget.signs
+            .where((s) => ProgressService.instance.isLearned(s.id))
+            .length;
+        return Container(
+          margin: const EdgeInsets.only(bottom: 10),
+          decoration: BoxDecoration(
+            color: AppColors.bgCard,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.border),
           ),
-          if (_expanded)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-              child: Wrap(
-                spacing: 8, runSpacing: 8,
-                children: widget.signs
-                    .map((s) => GestureDetector(
-                          onTap: () => openPslUrl(context, s.pslUrl),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: AppColors.bgSoft,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: AppColors.border),
-                            ),
-                            child: Column(
-                              children: [
-                                Row(mainAxisSize: MainAxisSize.min, children: [
-                                  Text(s.english,
-                                      style: const TextStyle(
-                                          color: AppColors.text, fontSize: 12,
-                                          fontWeight: FontWeight.w600)),
-                                  const SizedBox(width: 4),
-                                  const Icon(Icons.open_in_new,
-                                      color: AppColors.textDim, size: 11),
-                                ]),
-                                Text(s.urdu,
-                                    textDirection: TextDirection.rtl,
-                                    style: const TextStyle(
-                                        color: AppColors.accent, fontSize: 13)),
-                              ],
+          child: Column(
+            children: [
+              GestureDetector(
+                onTap: () => setState(() => _expanded = !_expanded),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 42,
+                        height: 42,
+                        decoration: BoxDecoration(
+                          color: AppColors.bgSoft,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppColors.border),
+                        ),
+                        child: Icon(_categoryIcon(widget.category),
+                            color: AppColors.accent, size: 20),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(_title,
+                                style: const TextStyle(
+                                    color: AppColors.text,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 15)),
+                            Text('$learnedInGroup / ${widget.signs.length} learned',
+                                style: const TextStyle(
+                                    color: AppColors.textDim, fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                      Icon(
+                        _expanded
+                            ? Icons.keyboard_arrow_up
+                            : Icons.keyboard_arrow_down,
+                        color: AppColors.textDim,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (_expanded)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: widget.signs.map((s) {
+                      final learned =
+                          ProgressService.instance.isLearned(s.id);
+                      return GestureDetector(
+                        onTap: () => openSignVideo(context, s),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: learned
+                                ? AppColors.accent.withValues(alpha: 0.15)
+                                : AppColors.bgSoft,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: learned
+                                  ? AppColors.accent.withValues(alpha: 0.6)
+                                  : AppColors.border,
                             ),
                           ),
-                        ))
-                    .toList(),
-              ),
-            ),
-        ],
-      ),
+                          child: Column(
+                            children: [
+                              Row(mainAxisSize: MainAxisSize.min, children: [
+                                Text(s.english,
+                                    style: const TextStyle(
+                                        color: AppColors.text,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600)),
+                                const SizedBox(width: 4),
+                                Icon(
+                                  learned
+                                      ? Icons.check_circle
+                                      : Icons.play_circle_outline,
+                                  color: learned
+                                      ? AppColors.accent
+                                      : AppColors.textDim,
+                                  size: 13,
+                                ),
+                              ]),
+                              Text(s.urdu,
+                                  textDirection: TextDirection.rtl,
+                                  style: const TextStyle(
+                                      color: AppColors.accent, fontSize: 13)),
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 
   IconData _categoryIcon(String cat) {
     return switch (cat) {
-      'greetings'  => Icons.waving_hand,
-      'animals'    => Icons.pets,
-      'transport'  => Icons.directions_bus,
-      'objects'    => Icons.category,
-      'bathroom'   => Icons.water_drop,
-      'places'     => Icons.place,
-      'expressions'=> Icons.chat_bubble_outline,
-      'actions'    => Icons.gesture,
+      'greetings' => Icons.waving_hand,
+      'animals' => Icons.pets,
+      'transport' => Icons.directions_bus,
+      'objects' => Icons.category,
+      'bathroom' => Icons.water_drop,
+      'places' => Icons.place,
+      'expressions' => Icons.chat_bubble_outline,
+      'actions' => Icons.gesture,
       'appearance' => Icons.face,
-      'body'       => Icons.accessibility_new,
-      'alphabet'   => Icons.abc,
-      _            => Icons.sign_language,
+      'body' => Icons.accessibility_new,
+      'alphabet' => Icons.abc,
+      _ => Icons.sign_language,
     };
   }
 }
@@ -290,7 +391,8 @@ class _CircleProgress extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      width: 48, height: 48,
+      width: 48,
+      height: 48,
       child: Stack(
         alignment: Alignment.center,
         children: [

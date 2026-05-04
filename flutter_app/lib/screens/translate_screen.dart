@@ -3,18 +3,19 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
+import '../app.dart' show MainShellState;
 import '../ml/prediction.dart';
 import '../ml/sign_client.dart';
 import '../ml/yuv_jpeg.dart';
+import '../services/settings_service.dart';
 import '../theme/app_colors.dart';
 import '../widgets/confidence_bar_widget.dart';
 import '../widgets/state_pill.dart';
 
-// Inference server WebSocket. Override at run time with --dart-define=PSL_WS_URL=ws://<host>:8000/ws/translate
-const String _kDefaultWsUrl = String.fromEnvironment(
-  'PSL_WS_URL',
-  defaultValue: 'ws://172.20.10.2:8000/ws/translate',
-);
+// Inference server WebSocket. Stored in SettingsService.serverUrl
+// (editable from Profile). Build-time default lives there too via
+// --dart-define=PSL_WS_URL=ws://<host>:8000/ws/translate.
+String get _kDefaultWsUrl => SettingsService.instance.serverUrl;
 
 class TranslateScreen extends StatefulWidget {
   const TranslateScreen({super.key});
@@ -60,6 +61,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
   @override
   void initState() {
     super.initState();
+    SettingsService.instance.addListener(_onSettingsChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initAll();
     });
@@ -67,6 +69,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
 
   @override
   void dispose() {
+    SettingsService.instance.removeListener(_onSettingsChanged);
     _stopCamera();
     _predSub?.cancel();
     _commitSub?.cancel();
@@ -75,6 +78,26 @@ class _TranslateScreenState extends State<TranslateScreen> {
     _pred.dispose();
     _tts.stop();
     super.dispose();
+  }
+
+  void _onSettingsChanged() {
+    // Reapply rate / language on the live TTS engine so changes from
+    // the profile screen take effect without restarting the app.
+    if (!_ttsReady) return;
+    _tts.setSpeechRate(SettingsService.instance.ttsSpeed);
+    final wantUrdu = SettingsService.instance.prefersUrdu;
+    final desired = wantUrdu
+        ? const ['ur-PK', 'ur-IN', 'ur', 'hi-IN', 'en-IN', 'en-US']
+        : const ['en-US', 'en-IN', 'en-GB'];
+    () async {
+      for (final lang in desired) {
+        if (await _tts.isLanguageAvailable(lang) == true) {
+          await _tts.setLanguage(lang);
+          _ttsLang = lang;
+          break;
+        }
+      }
+    }();
   }
 
   Future<void> _initAll() async {
@@ -114,13 +137,17 @@ class _TranslateScreenState extends State<TranslateScreen> {
     _commitSub = _client.commits.listen((p) {
       if (!mounted) return;
       if (p.label.isEmpty) return;
+      // Drop commits whose confidence is below the user-configured
+      // threshold (Profile → Confidence Threshold). Lets people make the
+      // UX stricter without retraining the model.
+      if (p.confidence < SettingsService.instance.confidence) return;
       // Alphabets: each commit is a letter — append every time, even
       // when the letter repeats (double letters are valid).
       // Words: dedupe back-to-back commits of the same word.
       if (_mode == SignMode.words && p.label == _lastCommitted) return;
       _lastCommitted = p.label;
       setState(() => _history.add((english: p.english, urdu: p.urdu)));
-      _speak(p.urdu);
+      _speak(p.urdu, english: p.english);
     });
   }
 
@@ -143,9 +170,11 @@ class _TranslateScreenState extends State<TranslateScreen> {
       } catch (e) {
         debugPrint('PSL: tts engine select skipped: $e');
       }
-      await _tts.setSpeechRate(0.45);
+      await _tts.setSpeechRate(SettingsService.instance.ttsSpeed);
       await _tts.setPitch(1.0);
-      const candidates = ['ur-PK', 'ur-IN', 'ur', 'hi-IN', 'en-IN', 'en-US'];
+      final candidates = SettingsService.instance.prefersUrdu
+          ? const ['ur-PK', 'ur-IN', 'ur', 'hi-IN', 'en-IN', 'en-US']
+          : const ['en-US', 'en-IN', 'en-GB', 'ur-PK'];
       for (final lang in candidates) {
         final available = await _tts.isLanguageAvailable(lang);
         if (available == true) {
@@ -164,7 +193,10 @@ class _TranslateScreenState extends State<TranslateScreen> {
     }
   }
 
-  Future<void> _speak(String text) async {
+  Future<void> _speak(String urdu, {String? english}) async {
+    final text = SettingsService.instance.prefersUrdu
+        ? urdu
+        : (english ?? urdu);
     if (text.isEmpty || text == '\u2014') return;
     if (!_ttsReady) {
       await _initTts();
@@ -271,7 +303,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
   void _onStart() async {
     if (!_serverReady || !_client.isReady) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Connecting to inference server… ($_kDefaultWsUrl)')),
+        SnackBar(content: Text('Connecting to inference server… ($_kDefaultWsUrl)')),
       );
       // Retry connect lazily so a brief outage doesn't trap the UI.
       try {
@@ -302,13 +334,21 @@ class _TranslateScreenState extends State<TranslateScreen> {
 
   void _onSpeak() {
     final p = _pred.value;
-    if (p.hasHands && p.urdu != '\u2014') _speak(p.urdu);
+    if (p.hasHands && p.urdu != '\u2014') {
+      _speak(p.urdu, english: p.english);
+    }
   }
 
   void _onSpeakSentence() {
     if (_history.isEmpty) return;
     final sep = _mode == SignMode.alphabets ? '' : ' ';
-    _speak(_history.map((h) => h.urdu).join(sep));
+    final urdu = _history.map((h) => h.urdu).join(sep);
+    final english = _history.map((h) => h.english).join(sep);
+    _speak(urdu, english: english);
+  }
+
+  void _openProfile() {
+    context.findAncestorStateOfType<MainShellState>()?.selectTab(3);
   }
 
   // ── build ─────────────────────────────────────────────────────────────
@@ -372,18 +412,22 @@ class _TranslateScreenState extends State<TranslateScreen> {
   Widget _buildHeader() => Container(
     padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
     child: Row(children: [
-      const Icon(Icons.menu, color: AppColors.textDim, size: 22),
-      const SizedBox(width: 12),
+      const Icon(Icons.hearing, color: AppColors.accent, size: 24),
+      const SizedBox(width: 10),
       const Text('LISTEN', style: TextStyle(
         color: AppColors.accent, fontWeight: FontWeight.w900,
         fontSize: 20, letterSpacing: 3)),
       const Spacer(),
-      Container(
-        width: 32, height: 32,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle, color: AppColors.bgSoft,
-          border: Border.all(color: AppColors.border)),
-        child: const Icon(Icons.person, color: AppColors.textDim, size: 18)),
+      GestureDetector(
+        onTap: _openProfile,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          width: 32, height: 32,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle, color: AppColors.bgSoft,
+            border: Border.all(color: AppColors.border)),
+          child: const Icon(Icons.person, color: AppColors.textDim, size: 18)),
+      ),
     ]),
   );
 
@@ -767,8 +811,8 @@ class _TranslateScreenState extends State<TranslateScreen> {
         ),
       ]),
       const SizedBox(height: 6),
-      const Text('URL: $_kDefaultWsUrl',
-          style: TextStyle(color: AppColors.textDim, fontSize: 11)),
+      Text('URL: $_kDefaultWsUrl',
+          style: const TextStyle(color: AppColors.textDim, fontSize: 11)),
       if (_connectError != null) ...[
         const SizedBox(height: 4),
         Text(_connectError!,

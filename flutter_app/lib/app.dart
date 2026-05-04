@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'theme/app_colors.dart';
+import 'screens/auth_screen.dart';
 import 'screens/translate_screen.dart';
 import 'screens/learn_screen.dart';
 import 'screens/dictionary_screen.dart';
 import 'screens/profile_screen.dart';
+import 'services/auth_service.dart';
 
 class ListenApp extends StatelessWidget {
   const ListenApp({super.key});
@@ -29,25 +31,64 @@ class ListenApp extends StatelessWidget {
         ),
         textTheme: const TextTheme(
           bodyMedium: TextStyle(color: AppColors.text),
-          bodySmall:  TextStyle(color: AppColors.textDim),
+          bodySmall: TextStyle(color: AppColors.textDim),
         ),
       ),
-      home: const _MainShell(),
+      home: const _AuthGate(),
     );
   }
 }
 
-class _MainShell extends StatefulWidget {
-  const _MainShell();
+/// Listens to the Supabase auth state and shows either the login flow
+/// or the main tab shell. Picking the right root here means individual
+/// screens can assume `AuthService.instance.currentUser` is non-null.
+class _AuthGate extends StatelessWidget {
+  const _AuthGate();
 
   @override
-  State<_MainShell> createState() => _MainShellState();
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: AuthService.instance,
+      builder: (_, __) {
+        if (!AuthService.instance.isInitialized) {
+          return const Scaffold(
+            backgroundColor: AppColors.bg,
+            body: Center(
+              child: CircularProgressIndicator(color: AppColors.accent),
+            ),
+          );
+        }
+        if (!AuthService.instance.isSignedIn) {
+          return const AuthScreen();
+        }
+        return const MainShell();
+      },
+    );
+  }
 }
 
-class _MainShellState extends State<_MainShell> {
+class MainShell extends StatefulWidget {
+  const MainShell({super.key});
+
+  @override
+  State<MainShell> createState() => MainShellState();
+}
+
+/// Public so other screens (e.g. TranslateScreen header) can grab the
+/// nearest [MainShellState] via context.findAncestorStateOfType and
+/// switch tabs programmatically.
+class MainShellState extends State<MainShell> {
   int _tab = 0;
   // Track which tabs have been visited so we only build them on first visit
   final Set<int> _visited = {0};
+
+  void selectTab(int idx) {
+    if (idx < 0 || idx > 3) return;
+    setState(() {
+      _tab = idx;
+      _visited.add(idx);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -85,10 +126,10 @@ class _MainShellState extends State<_MainShell> {
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: Row(
             children: [
-              _navItem(0, Icons.videocam_outlined,  Icons.videocam,  'Translate'),
-              _navItem(1, Icons.school_outlined,    Icons.school,    'Learn'),
+              _navItem(0, Icons.videocam_outlined, Icons.videocam, 'Translate'),
+              _navItem(1, Icons.school_outlined, Icons.school, 'Learn'),
               _navItem(2, Icons.menu_book_outlined, Icons.menu_book, 'Dictionary'),
-              _navItem(3, Icons.person_outline,     Icons.person,    'Profile'),
+              _navItem(3, Icons.person_outline, Icons.person, 'Profile'),
             ],
           ),
         ),
@@ -100,10 +141,7 @@ class _MainShellState extends State<_MainShell> {
     final active = _tab == idx;
     return Expanded(
       child: GestureDetector(
-        onTap: () => setState(() {
-          _tab = idx;
-          _visited.add(idx); // mark as visited so it gets built
-        }),
+        onTap: () => selectTab(idx),
         behavior: HitTestBehavior.opaque,
         child: Column(
           mainAxisSize: MainAxisSize.min,

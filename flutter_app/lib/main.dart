@@ -4,6 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'app.dart';
+import 'services/auth_service.dart';
+import 'services/settings_service.dart';
+import 'services/streak_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -15,5 +18,11 @@ void main() async {
   }
 
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+
+  await AuthService.initSupabase();
+  AuthService.instance.start();
+  await SettingsService.instance.load();
+  await StreakService.instance.touchToday();
+
   runApp(const ListenApp());
 }
