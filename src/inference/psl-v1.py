@@ -14,8 +14,21 @@ import psycopg2
 from PIL import Image, ImageDraw, ImageFont
 
 try:
-    db_conn = psycopg2.connect("postgresql://postgres:12345@localhost:5432/urdu_dict")
-    print("[OK] Connected to PostgreSQL dictionary")
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+try:
+    db_conn = psycopg2.connect(
+        host=os.getenv("DB_HOST", "ep-falling-river-aql8vty6.c-8.us-east-1.aws.neon.tech"),
+        port=os.getenv("DB_PORT", "5432"),
+        dbname=os.getenv("DB_NAME", "neondb"),
+        user=os.getenv("DB_USER", "neondb_owner"),
+        password=os.getenv("DB_PASSWORD", "npg_Kprkc1Po3ZHA"),
+        sslmode=os.getenv("PGSSLMODE", "require"),
+    )
+    print("[OK] Connected to global Neon PostgreSQL dictionary")
 except Exception as e:
     print(f"[ERROR] Could not connect to PostgreSQL: {e}")
     db_conn = None
