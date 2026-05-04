@@ -1195,11 +1195,12 @@ class ListenApp:
             if not DB_SUPPORT:
                 raise RuntimeError("psycopg2 / python-dotenv not installed")
             self.db_conn = psycopg2.connect(
-                host=os.getenv("DB_HOST", "localhost"),
+                host=os.getenv("DB_HOST", "ep-falling-river-aql8vty6.c-8.us-east-1.aws.neon.tech"),
                 port=os.getenv("DB_PORT", "5432"),
-                dbname=os.getenv("DB_NAME", "urdu_dict"),
-                user=os.getenv("DB_USER", "postgres"),
-                password=os.getenv("DB_PASSWORD", "12345"),
+                dbname=os.getenv("DB_NAME", "neondb"),
+                user=os.getenv("DB_USER", "neondb_owner"),
+                password=os.getenv("DB_PASSWORD", "npg_Kprkc1Po3ZHA"),
+                sslmode=os.getenv("PGSSLMODE", "require"),
             )
             stages[4].done = True
         except Exception as e:
