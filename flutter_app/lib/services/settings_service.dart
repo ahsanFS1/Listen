@@ -12,6 +12,7 @@ class SettingsService extends ChangeNotifier {
   static const _kTtsSpeed = 'settings.tts_speed_v1';
   static const _kConfidence = 'settings.confidence_v1';
   static const _kLang = 'settings.lang_v1'; // 'urdu' | 'english'
+
   static const _kServerUrl = 'settings.server_url_v1';
 
   // Build-time default. Overridden at runtime by user-entered URL in profile.

@@ -30,13 +30,33 @@ _DB_SSLMODE = os.getenv("PGSSLMODE", "require")
 
 _lock = threading.Lock()
 _conn = None
-_disabled = False
 
 
 def _ensure_conn():
-    global _conn, _disabled
-    if _disabled or psycopg2 is None:
+    """Return a healthy connection, reconnecting on demand.
+
+    Networks change (Wi-Fi swap, IP renewal), so a previously-good Neon
+    socket can silently die. We don't permanently disable on first error —
+    instead we drop the dead handle and try again on the next call.
+    """
+    global _conn
+    if psycopg2 is None:
         return None
+    if _conn is not None:
+        # Cheap liveness probe — closes/marks bad if the socket is gone.
+        try:
+            if getattr(_conn, "closed", 0):
+                _conn = None
+            else:
+                with _conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+        except Exception:
+            try:
+                _conn.close()
+            except Exception:
+                pass
+            _conn = None
     if _conn is not None:
         return _conn
     with _lock:
@@ -46,12 +66,12 @@ def _ensure_conn():
             _conn = psycopg2.connect(
                 host=_DB_HOST, port=_DB_PORT, dbname=_DB_NAME,
                 user=_DB_USER, password=_DB_PASSWORD, sslmode=_DB_SSLMODE,
+                connect_timeout=4,
             )
             _conn.autocommit = True
             print(f"[suggest] connected to {_DB_HOST}/{_DB_NAME}")
         except Exception as exc:
-            print(f"[suggest] DB connect failed, disabling: {exc}")
-            _disabled = True
+            print(f"[suggest] DB connect failed: {exc}")
             _conn = None
     return _conn
 
@@ -66,10 +86,13 @@ def _query(sql: str, params: tuple, limit: int) -> List[str]:
             return [r[0] for r in cur.fetchall()][:limit]
     except Exception as exc:
         print(f"[suggest] query failed: {exc}")
+        # Drop the broken handle so the next call reconnects from scratch.
+        global _conn
         try:
-            conn.rollback()
+            conn.close()
         except Exception:
             pass
+        _conn = None
         return []
 
 
@@ -77,22 +100,49 @@ def word_completions(prefix: str, limit: int = 6) -> List[str]:
     p = (prefix or "").strip()
     if not p:
         return []
-    return _query(
+    # Prefix match first (true completion of the live spelling), then fall
+    # back to substring so the user still sees something when no word in
+    # the dictionary literally begins with their letters.
+    rows = _query(
         "SELECT word FROM urdu_words WHERE word LIKE %s LIMIT %s",
         (f"{p}%", limit),
+        limit,
+    )
+    if rows:
+        return rows
+    return _query(
+        "SELECT word FROM urdu_words WHERE word LIKE %s LIMIT %s",
+        (f"%{p}%", limit),
         limit,
     )
 
 
 def sentence_completions(prefix: str, limit: int = 6) -> List[str]:
     p = (prefix or "").strip()
-    if p:
+    if not p:
         return _query(
-            "SELECT sentence FROM urdu_sentences "
-            "WHERE sentence LIKE %s OR sentence LIKE %s LIMIT %s",
-            (f"{p}%", f"{p} %", limit),
+            "SELECT sentence FROM urdu_sentences LIMIT %s",
+            (limit,),
             limit,
         )
+    # Try a prefix match first (sentences that *start* with the signed
+    # text), then any sentence that *contains* it. Finally fall back to
+    # generic sentences so the user always sees suggestions.
+    rows = _query(
+        "SELECT sentence FROM urdu_sentences "
+        "WHERE sentence LIKE %s OR sentence LIKE %s LIMIT %s",
+        (f"{p}%", f"{p} %", limit),
+        limit,
+    )
+    if rows:
+        return rows
+    rows = _query(
+        "SELECT sentence FROM urdu_sentences WHERE sentence LIKE %s LIMIT %s",
+        (f"%{p}%", limit),
+        limit,
+    )
+    if rows:
+        return rows
     return _query(
         "SELECT sentence FROM urdu_sentences LIMIT %s",
         (limit,),

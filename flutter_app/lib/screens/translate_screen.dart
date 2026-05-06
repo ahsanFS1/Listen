@@ -67,6 +67,9 @@ class _TranslateScreenState extends State<TranslateScreen> {
   List<String> _sentSugs = const [];
   Timer? _sugDebounce;
   String _lastSugPrefix = '';
+  bool _sugLoading = false;
+  String? _sugError;
+  bool _sugAttempted = false;
 
   @override
   void initState() {
@@ -91,7 +94,21 @@ class _TranslateScreenState extends State<TranslateScreen> {
     super.dispose();
   }
 
+  // Last server URL we connected with. Compared on each settings change so
+  // we only tear down + reconnect the WebSocket when the user actually
+  // edited it in Profile (not on every TTS slider tweak).
+  String _connectedServerUrl = SettingsService.instance.serverUrl;
+
   void _onSettingsChanged() {
+    // If the user edited the server URL in Profile, drop the live socket
+    // and rebuild the SignClient with the new URL — otherwise we'd keep
+    // hammering the old (often dead) host.
+    final currentUrl = SettingsService.instance.serverUrl;
+    if (currentUrl != _connectedServerUrl) {
+      _connectedServerUrl = currentUrl;
+      _reconnectForUrlChange(currentUrl);
+    }
+
     // Reapply rate / language on the live TTS engine so changes from
     // the profile screen take effect without restarting the app.
     if (!_ttsReady) return;
@@ -128,6 +145,10 @@ class _TranslateScreenState extends State<TranslateScreen> {
     _wireClientStreams();
 
     if (mounted) setState(() {});
+
+    // Pre-warm the suggestion strip with generic phrases so the user sees
+    // it working immediately, before the first commit lands.
+    if (_serverReady) _scheduleSuggest();
   }
 
   void _wireClientStreams() {
@@ -182,22 +203,32 @@ class _TranslateScreenState extends State<TranslateScreen> {
   Future<void> _refreshSuggestions() async {
     final prefix = _currentUrduPrefix();
     _lastSugPrefix = prefix;
+    setState(() {
+      _sugLoading = true;
+      _sugAttempted = true;
+      _sugError = null;
+    });
     final svc = SuggestionService.instance;
     // Words mode: only sentence completions make sense (each commit is a
     // whole word, not a partial spelling). Alphabets mode: ask for word
     // completions on the live spelling AND sentence completions on the
     // committed text — same heuristic as psl-v1.py:227.
-    final futures = <Future<List<String>>>[
+    final results = await Future.wait([
       _mode == SignMode.alphabets
           ? svc.words(prefix)
-          : Future.value(const <String>[]),
+          : Future.value((items: const <String>[], error: null)),
       svc.sentences(prefix),
-    ];
-    final results = await Future.wait(futures);
+    ]);
     if (!mounted || prefix != _lastSugPrefix) return;
+    final wordRes = results[0];
+    final sentRes = results[1];
     setState(() {
-      _wordSugs = results[0];
-      _sentSugs = results[1];
+      _wordSugs = wordRes.items;
+      _sentSugs = sentRes.items;
+      _sugLoading = false;
+      // Surface only the first error — both endpoints sit on the same
+      // server so they fail or succeed together in practice.
+      _sugError = wordRes.error ?? sentRes.error;
     });
   }
 
@@ -259,6 +290,28 @@ class _TranslateScreenState extends State<TranslateScreen> {
     } catch (e) {
       debugPrint('PSL: tts speak failed: $e');
     }
+  }
+
+  Future<void> _reconnectForUrlChange(String newUrl) async {
+    final wasOn = _cameraOn;
+    _stopCamera();
+    setState(() {
+      _serverReady = false;
+      _connectError = null;
+      _pred.value = Prediction.idle;
+    });
+    await _client.dispose();
+    _client = SignClient(url: newUrl, mode: _mode);
+    _wireClientStreams();
+    try {
+      await _client.connect();
+      if (!mounted) return;
+      setState(() => _serverReady = true);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _connectError = '$e');
+    }
+    if (wasOn) await _startCamera();
   }
 
   Future<void> _switchMode(SignMode next) async {
@@ -472,7 +525,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
                       padding: const EdgeInsets.symmetric(horizontal: 18),
                       child: _buildActionRow(),
                     ),
-                    if (_wordSugs.isNotEmpty || _sentSugs.isNotEmpty) ...[
+                    if (_sugAttempted) ...[
                       const SizedBox(height: 14),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 18),
@@ -545,6 +598,23 @@ class _TranslateScreenState extends State<TranslateScreen> {
                 valueListenable: _pred,
                 builder: (_, p, __) =>
                     p.hasHands ? const SizedBox.shrink() : _buildHandsHint(),
+              ),
+            // State pill overlaid on the camera so HOLD STEADY, COOLDOWN
+            // and SHOW HANDS are visible while the user's eyes are on the
+            // preview, not on the controls below.
+            if (_cameraOn)
+              Positioned(
+                top: 14, left: 0, right: 0,
+                child: Center(
+                  child: ValueListenableBuilder<Prediction>(
+                    valueListenable: _pred,
+                    builder: (_, p, __) => StatePill(
+                      state: p.state,
+                      hasHands: p.hasHands,
+                      cameraOn: _cameraOn,
+                    ),
+                  ),
+                ),
               ),
           ]),
         ),
@@ -862,6 +932,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
   // ── suggestion strip ──────────────────────────────────────────────────
 
   Widget _buildSuggestionsCard() {
+    final hasAny = _wordSugs.isNotEmpty || _sentSugs.isNotEmpty;
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
       decoration: BoxDecoration(
@@ -876,6 +947,11 @@ class _TranslateScreenState extends State<TranslateScreen> {
             const Icon(Icons.auto_awesome, size: 14, color: AppColors.accent),
             const SizedBox(width: 6),
             _label('SUGGESTIONS'),
+            const Spacer(),
+            if (_sugLoading)
+              const SizedBox(
+                width: 12, height: 12,
+                child: CircularProgressIndicator(strokeWidth: 1.6, color: AppColors.accent)),
           ]),
           if (_wordSugs.isNotEmpty) ...[
             const SizedBox(height: 10),
@@ -884,6 +960,39 @@ class _TranslateScreenState extends State<TranslateScreen> {
           if (_sentSugs.isNotEmpty) ...[
             const SizedBox(height: 10),
             _sugGroup('Phrases', _sentSugs, isSentence: true),
+          ],
+          if (!_sugLoading && !hasAny) ...[
+            const SizedBox(height: 10),
+            Row(children: [
+              Icon(
+                _sugError != null ? Icons.cloud_off : Icons.info_outline,
+                size: 14,
+                color: _sugError != null ? AppColors.warn : AppColors.textDim),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  _sugError != null
+                      ? 'Couldn’t fetch suggestions: $_sugError'
+                      : 'No suggestions yet — sign a word to see options',
+                  style: TextStyle(
+                    color: _sugError != null ? AppColors.warn : AppColors.textDim,
+                    fontSize: 12, height: 1.3),
+                ),
+              ),
+              if (_sugError != null)
+                GestureDetector(
+                  onTap: _refreshSuggestions,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppColors.bgSoft,
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(color: AppColors.border)),
+                    child: const Text('Retry', style: TextStyle(
+                      color: AppColors.text, fontSize: 11, fontWeight: FontWeight.w700)),
+                  ),
+                ),
+            ]),
           ],
         ],
       ),

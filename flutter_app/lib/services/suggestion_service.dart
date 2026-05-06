@@ -32,26 +32,32 @@ class SuggestionService {
     );
   }
 
-  Future<List<String>> _fetch(String path, String prefix) async {
+  Future<({List<String> items, String? error})> _fetch(
+      String path, String prefix) async {
     final base = _endpoint(path);
-    if (base == null) return const [];
+    if (base == null) {
+      return (items: const <String>[], error: 'no server URL configured');
+    }
     final url = base.replace(queryParameters: {'prefix': prefix});
     try {
       final r = await _client
           .get(url)
-          .timeout(const Duration(milliseconds: 1500));
-      if (r.statusCode != 200) return const [];
+          .timeout(const Duration(milliseconds: 2500));
+      if (r.statusCode != 200) {
+        return (items: const <String>[], error: 'HTTP ${r.statusCode}');
+      }
       final j = jsonDecode(r.body) as Map<String, dynamic>;
-      final list = (j['suggestions'] as List?) ?? const [];
-      return list.map((e) => e.toString()).toList(growable: false);
-    } catch (_) {
-      return const [];
+      final raw = (j['suggestions'] as List?) ?? const [];
+      final list = raw.map((e) => e.toString()).toList(growable: false);
+      return (items: list, error: null);
+    } catch (e) {
+      return (items: const <String>[], error: e.toString());
     }
   }
 
-  Future<List<String>> words(String prefix) =>
+  Future<({List<String> items, String? error})> words(String prefix) =>
       _fetch('/suggest/words', prefix);
 
-  Future<List<String>> sentences(String prefix) =>
+  Future<({List<String> items, String? error})> sentences(String prefix) =>
       _fetch('/suggest/sentences', prefix);
 }
