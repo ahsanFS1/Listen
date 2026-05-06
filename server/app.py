@@ -17,6 +17,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from sign_session import SignSession, _ensure_model_loaded
 from alphabet_session import AlphabetSession, _ensure_alpha_model_loaded
+from suggestions import word_completions, sentence_completions
 
 log = logging.getLogger("psl.server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -39,6 +40,16 @@ app = FastAPI(lifespan=lifespan)
 @app.get("/healthz")
 async def healthz() -> dict:
     return {"ok": True}
+
+
+@app.get("/suggest/words")
+async def suggest_words(prefix: str = "", limit: int = 6) -> dict:
+    return {"prefix": prefix, "suggestions": word_completions(prefix, limit)}
+
+
+@app.get("/suggest/sentences")
+async def suggest_sentences(prefix: str = "", limit: int = 6) -> dict:
+    return {"prefix": prefix, "suggestions": sentence_completions(prefix, limit)}
 
 
 @app.websocket("/ws/translate")

@@ -31,7 +31,11 @@
       "Bash(kill 57909)",
       "Bash(grep -vE \"^\\\\s*$\")",
       "Bash(~/Library/Android/sdk/platform-tools/adb shell *)",
-      "Bash(pkill -f \"flutter run\")"
+      "Bash(pkill -f \"flutter run\")",
+      "Bash(python3 *)",
+      "WebFetch(domain:sdgs.un.org)",
+      "Bash(pip3 install *)",
+      "WebFetch(domain:zero-limit.vercel.app)"
     ]
   }
 }

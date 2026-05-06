@@ -8,6 +8,7 @@ import '../ml/prediction.dart';
 import '../ml/sign_client.dart';
 import '../ml/yuv_jpeg.dart';
 import '../services/settings_service.dart';
+import '../services/suggestion_service.dart';
 import '../theme/app_colors.dart';
 import '../widgets/confidence_bar_widget.dart';
 import '../widgets/state_pill.dart';
@@ -58,6 +59,15 @@ class _TranslateScreenState extends State<TranslateScreen> {
   // ── UI ───────────────────────────────────────────────────────────────
   bool _showHistory = false;
 
+  // ── suggestions (Urdu word + sentence completions from Neon DB) ─────
+  // In Alphabets mode the joined Urdu of committed letters is the live
+  // word being spelled → query word completions. In both modes we also
+  // ask for sentence completions so users can shortcut to a full phrase.
+  List<String> _wordSugs = const [];
+  List<String> _sentSugs = const [];
+  Timer? _sugDebounce;
+  String _lastSugPrefix = '';
+
   @override
   void initState() {
     super.initState();
@@ -74,6 +84,7 @@ class _TranslateScreenState extends State<TranslateScreen> {
     _predSub?.cancel();
     _commitSub?.cancel();
     _errSub?.cancel();
+    _sugDebounce?.cancel();
     _client.dispose();
     _pred.dispose();
     _tts.stop();
@@ -148,6 +159,45 @@ class _TranslateScreenState extends State<TranslateScreen> {
       _lastCommitted = p.label;
       setState(() => _history.add((english: p.english, urdu: p.urdu)));
       _speak(p.urdu, english: p.english);
+      _scheduleSuggest();
+    });
+  }
+
+  // ── suggestions ─────────────────────────────────────────────────────
+
+  String _currentUrduPrefix() {
+    if (_history.isEmpty) return '';
+    // Alphabets are concatenated into a single Urdu word; words are space-
+    // joined into a phrase. Mirrors the join logic used by the sentence
+    // strip + Speak Sentence.
+    final sep = _mode == SignMode.alphabets ? '' : ' ';
+    return _history.map((h) => h.urdu).join(sep);
+  }
+
+  void _scheduleSuggest() {
+    _sugDebounce?.cancel();
+    _sugDebounce = Timer(const Duration(milliseconds: 250), _refreshSuggestions);
+  }
+
+  Future<void> _refreshSuggestions() async {
+    final prefix = _currentUrduPrefix();
+    _lastSugPrefix = prefix;
+    final svc = SuggestionService.instance;
+    // Words mode: only sentence completions make sense (each commit is a
+    // whole word, not a partial spelling). Alphabets mode: ask for word
+    // completions on the live spelling AND sentence completions on the
+    // committed text — same heuristic as psl-v1.py:227.
+    final futures = <Future<List<String>>>[
+      _mode == SignMode.alphabets
+          ? svc.words(prefix)
+          : Future.value(const <String>[]),
+      svc.sentences(prefix),
+    ];
+    final results = await Future.wait(futures);
+    if (!mounted || prefix != _lastSugPrefix) return;
+    setState(() {
+      _wordSugs = results[0];
+      _sentSugs = results[1];
     });
   }
 
@@ -221,6 +271,8 @@ class _TranslateScreenState extends State<TranslateScreen> {
       _lastCommitted = null;
       _pred.value = Prediction.idle;
       _serverReady = false;
+      _wordSugs = const [];
+      _sentSugs = const [];
     });
     await _client.dispose();
     _client = SignClient(url: _kDefaultWsUrl, mode: next);
@@ -330,7 +382,35 @@ class _TranslateScreenState extends State<TranslateScreen> {
     if (wasOn) await _startCamera();
   }
 
-  void _onClear() => setState(() { _history.clear(); _lastCommitted = null; });
+  void _onClear() {
+    setState(() {
+      _history.clear();
+      _lastCommitted = null;
+      _wordSugs = const [];
+      _sentSugs = const [];
+    });
+  }
+
+  void _onPickSuggestion(String urdu, {required bool isSentence}) {
+    setState(() {
+      // Replace history with the chosen suggestion as a single entry. We
+      // don't have an English translation from the DB, so reuse the Urdu
+      // — TTS prefers Urdu anyway in suggestion-pick flows.
+      _history
+        ..clear()
+        ..add((english: urdu, urdu: urdu));
+      _lastCommitted = null;
+      // Picking a sentence ends the phrase; clear suggestions to avoid
+      // dangling chips. Picking a word keeps suggestions live so the user
+      // can keep building the sentence.
+      if (isSentence) {
+        _wordSugs = const [];
+        _sentSugs = const [];
+      }
+    });
+    _speak(urdu);
+    if (!isSentence) _scheduleSuggest();
+  }
 
   void _onSpeak() {
     final p = _pred.value;
@@ -392,6 +472,13 @@ class _TranslateScreenState extends State<TranslateScreen> {
                       padding: const EdgeInsets.symmetric(horizontal: 18),
                       child: _buildActionRow(),
                     ),
+                    if (_wordSugs.isNotEmpty || _sentSugs.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 18),
+                        child: _buildSuggestionsCard(),
+                      ),
+                    ],
                     if (_history.isNotEmpty) ...[
                       const SizedBox(height: 18),
                       Padding(
@@ -723,7 +810,10 @@ class _TranslateScreenState extends State<TranslateScreen> {
         const SizedBox(height: 12),
         Row(children: [
           _textBtn(Icons.undo, 'Undo', () {
-            if (_history.isNotEmpty) setState(() => _history.removeLast());
+            if (_history.isNotEmpty) {
+              setState(() => _history.removeLast());
+              _scheduleSuggest();
+            }
           }),
           const SizedBox(width: 8),
           _textBtn(Icons.volume_up, 'Speak sentence', _onSpeakSentence, accent: true),
@@ -768,6 +858,89 @@ class _TranslateScreenState extends State<TranslateScreen> {
 
   Widget _label(String text) => Text(text, style: const TextStyle(
       color: AppColors.textDim, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 1.6));
+
+  // ── suggestion strip ──────────────────────────────────────────────────
+
+  Widget _buildSuggestionsCard() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      decoration: BoxDecoration(
+        color: AppColors.bgCard,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Icon(Icons.auto_awesome, size: 14, color: AppColors.accent),
+            const SizedBox(width: 6),
+            _label('SUGGESTIONS'),
+          ]),
+          if (_wordSugs.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _sugGroup('Words', _wordSugs, isSentence: false),
+          ],
+          if (_sentSugs.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _sugGroup('Phrases', _sentSugs, isSentence: true),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _sugGroup(String title, List<String> items, {required bool isSentence}) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: const TextStyle(
+          color: AppColors.textDim, fontSize: 11,
+          fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+        const SizedBox(height: 6),
+        SizedBox(
+          height: 40,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: items.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 8),
+            itemBuilder: (_, i) => _sugChip(items[i], isSentence: isSentence),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _sugChip(String text, {required bool isSentence}) {
+    final accent = isSentence ? AppColors.accent : AppColors.text;
+    return GestureDetector(
+      onTap: () => _onPickSuggestion(text, isSentence: isSentence),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSentence ? AppColors.accent.withAlpha(28) : AppColors.bgSoft,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: isSentence ? AppColors.accent.withAlpha(120) : AppColors.border,
+          ),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text(
+            text,
+            textDirection: TextDirection.rtl,
+            style: TextStyle(
+              color: accent,
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              height: 1.1,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Icon(Icons.north_east, size: 12, color: accent.withAlpha(180)),
+        ]),
+      ),
+    );
+  }
 
   Future<void> _retryConnect() async {
     setState(() => _connectError = null);

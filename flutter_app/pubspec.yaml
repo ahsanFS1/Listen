@@ -42,6 +42,10 @@ dependencies:
   # supabase.com; project URL + anon key live in lib/config/supabase_config.dart.
   supabase_flutter: ^2.8.0
 
+  # REST calls to the inference server's /suggest/* endpoints (Urdu word
+  # and sentence completion backed by Neon Postgres).
+  http: ^1.2.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
