@@ -1,0 +1,236 @@
+{
+  "ء": {
+    "asset": "assets/videos/letters/ء.mp4",
+    "id": 399,
+    "slug": "hamza",
+    "title": "Hamza"
+  },
+  "آ": {
+    "asset": "assets/videos/letters/آ.mp4",
+    "id": 362,
+    "slug": "alif-madda",
+    "title": "Alif Madda"
+  },
+  "ا": {
+    "asset": "assets/videos/letters/ا.mp4",
+    "id": 363,
+    "slug": "alif",
+    "title": "Alif"
+  },
+  "ب": {
+    "asset": "assets/videos/letters/ب.mp4",
+    "id": 364,
+    "slug": "bay",
+    "title": "Bay"
+  },
+  "ت": {
+    "asset": "assets/videos/letters/ت.mp4",
+    "id": 366,
+    "slug": "tay",
+    "title": "Tay"
+  },
+  "ث": {
+    "asset": "assets/videos/letters/ث.mp4",
+    "id": 368,
+    "slug": "say",
+    "title": "Say"
+  },
+  "ج": {
+    "asset": "assets/videos/letters/ج.mp4",
+    "id": 369,
+    "slug": "jeem",
+    "title": "Jeem"
+  },
+  "ح": {
+    "asset": "assets/videos/letters/ح.mp4",
+    "id": 371,
+    "slug": "hay",
+    "title": "Hay"
+  },
+  "خ": {
+    "asset": "assets/videos/letters/خ.mp4",
+    "id": 372,
+    "slug": "khay",
+    "title": "Khay"
+  },
+  "د": {
+    "asset": "assets/videos/letters/د.mp4",
+    "id": 373,
+    "slug": "daal",
+    "title": "Daal"
+  },
+  "ذ": {
+    "asset": "assets/videos/letters/ذ.mp4",
+    "id": 375,
+    "slug": "zaal",
+    "title": "Zaal"
+  },
+  "ر": {
+    "asset": "assets/videos/letters/ر.mp4",
+    "id": 376,
+    "slug": "ray",
+    "title": "Ray"
+  },
+  "ز": {
+    "asset": "assets/videos/letters/ز.mp4",
+    "id": 378,
+    "slug": "zay",
+    "title": "Zay"
+  },
+  "س": {
+    "asset": "assets/videos/letters/س.mp4",
+    "id": 380,
+    "slug": "seen",
+    "title": "Seen"
+  },
+  "ش": {
+    "asset": "assets/videos/letters/ش.mp4",
+    "id": 381,
+    "slug": "sheen",
+    "title": "Sheen"
+  },
+  "ص": {
+    "asset": "assets/videos/letters/ص.mp4",
+    "id": 382,
+    "slug": "suad",
+    "title": "Suad"
+  },
+  "ض": {
+    "asset": "assets/videos/letters/ض.mp4",
+    "id": 383,
+    "slug": "zuad",
+    "title": "Zuad"
+  },
+  "ط": {
+    "asset": "assets/videos/letters/ط.mp4",
+    "id": 384,
+    "slug": "toay",
+    "title": "Toay"
+  },
+  "ظ": {
+    "asset": "assets/videos/letters/ظ.mp4",
+    "id": 385,
+    "slug": "zoay",
+    "title": "Zoay"
+  },
+  "ع": {
+    "asset": "assets/videos/letters/ع.mp4",
+    "id": 386,
+    "slug": "aain",
+    "title": "Aain"
+  },
+  "غ": {
+    "asset": "assets/videos/letters/غ.mp4",
+    "id": 387,
+    "slug": "ghain",
+    "title": "Ghain"
+  },
+  "ف": {
+    "asset": "assets/videos/letters/ف.mp4",
+    "id": 388,
+    "slug": "fay",
+    "title": "Fay"
+  },
+  "ق": {
+    "asset": "assets/videos/letters/ق.mp4",
+    "id": 389,
+    "slug": "qaaf",
+    "title": "Qaaf"
+  },
+  "ل": {
+    "asset": "assets/videos/letters/ل.mp4",
+    "id": 392,
+    "slug": "laam",
+    "title": "Laam"
+  },
+  "م": {
+    "asset": "assets/videos/letters/م.mp4",
+    "id": 393,
+    "slug": "meem",
+    "title": "Meem"
+  },
+  "ن": {
+    "asset": "assets/videos/letters/ن.mp4",
+    "id": 394,
+    "slug": "noon",
+    "title": "Noon"
+  },
+  "و": {
+    "asset": "assets/videos/letters/و.mp4",
+    "id": 396,
+    "slug": "wow",
+    "title": "Wow"
+  },
+  "پ": {
+    "asset": "assets/videos/letters/پ.mp4",
+    "id": 365,
+    "slug": "pay",
+    "title": "Pay"
+  },
+  "چ": {
+    "asset": "assets/videos/letters/چ.mp4",
+    "id": 370,
+    "slug": "chay",
+    "title": "Chay"
+  },
+  "ڈ": {
+    "asset": "assets/videos/letters/ڈ.mp4",
+    "id": 374,
+    "slug": "ddaal",
+    "title": "Ddaal"
+  },
+  "ڑ": {
+    "asset": "assets/videos/letters/ڑ.mp4",
+    "id": 377,
+    "slug": "rray",
+    "title": "Rray"
+  },
+  "ژ": {
+    "asset": "assets/videos/letters/ژ.mp4",
+    "id": 379,
+    "slug": "zzay",
+    "title": "Zzay"
+  },
+  "ک": {
+    "asset": "assets/videos/letters/ک.mp4",
+    "id": 390,
+    "slug": "kaaf",
+    "title": "Kaaf"
+  },
+  "گ": {
+    "asset": "assets/videos/letters/گ.mp4",
+    "id": 391,
+    "slug": "gaaf",
+    "title": "Gaaf"
+  },
+  "ں": {
+    "asset": "assets/videos/letters/ں.mp4",
+    "id": 395,
+    "slug": "noon-ghunna",
+    "title": "Noon Ghunna"
+  },
+  "ھ": {
+    "asset": "assets/videos/letters/ھ.mp4",
+    "id": 398,
+    "slug": "do-chashmi-hay",
+    "title": "Do Chashmi Hay"
+  },
+  "ہ": {
+    "asset": "assets/videos/letters/ہ.mp4",
+    "id": 397,
+    "slug": "hay",
+    "title": "Choti Hay"
+  },
+  "ی": {
+    "asset": "assets/videos/letters/ی.mp4",
+    "id": 400,
+    "slug": "choti-yay",
+    "title": "Choti Yay"
+  },
+  "ے": {
+    "asset": "assets/videos/letters/ے.mp4",
+    "id": 401,
+    "slug": "bari-yay",
+    "title": "Bari Yay"
+  }
+}

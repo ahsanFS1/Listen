@@ -1,0 +1,59 @@
+name: listen_psl
+description: Pakistani Sign Language Recognition App
+version: 1.0.0+1
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # Inference runs server-side over a WebSocket (see server/). The Flutter
+  # app captures camera frames, encodes them to JPEG via the native
+  # YuvJpegPlugin, and ships them to the server. We previously tried
+  # on-device MediaPipe Tasks + TFLite but the Tasks API uses a different
+  # hand model than mp.solutions.hands(model_complexity=0) which the
+  # classifier was trained on, causing accuracy regression.
+
+  # Camera feed
+  camera: ^0.11.3
+  camera_android: ^0.10.9
+  camera_platform_interface: ^2.8.0
+
+  # WebSocket client to the inference server
+  web_socket_channel: ^3.0.1
+
+  # Urdu TTS
+  flutter_tts: ^4.0.2
+
+  # Open PSL dictionary website / external links
+  url_launcher: ^6.3.1
+
+  # Plays bundled .mp4 sign demonstration videos for the 64-word dictionary
+  video_player: ^2.9.2
+
+  # Persists "learned signs" progress across app launches
+  shared_preferences: ^2.3.2
+
+  # Auth + user accounts (email/password). Uses our hosted project on
+  # supabase.com; project URL + anon key live in lib/config/supabase_config.dart.
+  supabase_flutter: ^2.8.0
+
+  # REST calls to the inference server's /suggest/* endpoints (Urdu word
+  # and sentence completion backed by Neon Postgres).
+  http: ^1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/models/
+    - assets/videos/
+    - assets/videos/letters/
