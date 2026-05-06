@@ -220,25 +220,13 @@ class _AuthScreenState extends State<AuthScreen> {
   Widget _buildLogo() {
     return Column(
       children: [
-        Container(
-          width: 78,
-          height: 78,
-          decoration: BoxDecoration(
-            color: AppColors.bgCard,
-            shape: BoxShape.circle,
-            border: Border.all(color: AppColors.accent, width: 2),
-          ),
-          child: const Icon(Icons.sign_language,
-              color: AppColors.accent, size: 38),
+        Image.asset(
+          'assets/images/logo.png',
+          width: 110,
+          height: 110,
+          fit: BoxFit.contain,
         ),
-        const SizedBox(height: 14),
-        const Text('LISTEN',
-            style: TextStyle(
-                color: AppColors.accent,
-                fontWeight: FontWeight.w900,
-                fontSize: 26,
-                letterSpacing: 6)),
-        const SizedBox(height: 4),
+        const SizedBox(height: 10),
         const Text('Pakistani Sign Language',
             style: TextStyle(color: AppColors.textDim, fontSize: 13)),
       ],

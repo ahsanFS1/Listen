@@ -37,6 +37,8 @@ SIGNING_QUIET_SECS: float = 1.2
 HANDS_INVERT_HANDEDNESS: bool = True
 
 IDLE_CLASSES = {"nothing", "test_word"}
+# Classes suppressed due to overfitting — model falls back to the next-best prediction.
+SUPPRESSED_CLASSES = {"shower"}
 
 PSL_WORD_TO_URDU = {
     "absolutely": "بالکل", "aircrash": "ہوائی حادثہ", "airplane": "ہوائی جہاز",
@@ -313,7 +315,12 @@ class SignSession:
                 + (1.0 - EMA_INFER_ALPHA) * self._ema_probs
             )
 
-        top = int(np.argmax(self._ema_probs))
+        sorted_indices = np.argsort(self._ema_probs)[::-1]
+        for top in sorted_indices:
+            label = _class_labels[int(top)] if 0 <= int(top) < len(_class_labels) else ""
+            if label not in SUPPRESSED_CLASSES:
+                break
+        top = int(top)
         conf = float(self._ema_probs[top])
         label = _class_labels[top] if 0 <= top < len(_class_labels) else ""
 

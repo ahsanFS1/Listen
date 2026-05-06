@@ -54,6 +54,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
+    - assets/images/
     - assets/models/
     - assets/videos/
     - assets/videos/letters/
