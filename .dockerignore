@@ -1,0 +1,12 @@
+venv/
+flutter_app/
+scripts/
+demo_images/
+data/
+models/train_models/
+*.docx
+*.md
+.git/
+.claude/
+__pycache__/
+*.pyc

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import socket
 from contextlib import asynccontextmanager
 
@@ -20,7 +21,9 @@ from sign_session import SignSession, _ensure_model_loaded
 from alphabet_session import AlphabetSession, _ensure_alpha_model_loaded
 from suggestions import word_completions, sentence_completions
 
-PORT = 8000
+# Hosts like Railway/Render/Cloud Run inject PORT and route their public
+# domain to it; local dev keeps the 8000 default from SETUP.md.
+PORT = int(os.getenv("PORT", "8000"))
 
 log = logging.getLogger("psl.server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

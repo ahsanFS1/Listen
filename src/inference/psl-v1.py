@@ -25,7 +25,7 @@ try:
         port=os.getenv("DB_PORT", "5432"),
         dbname=os.getenv("DB_NAME", "neondb"),
         user=os.getenv("DB_USER", "neondb_owner"),
-        password=os.getenv("DB_PASSWORD", "npg_Kprkc1Po3ZHA"),
+        password=os.getenv("DB_PASSWORD"),
         sslmode=os.getenv("PGSSLMODE", "require"),
     )
     print("[OK] Connected to global Neon PostgreSQL dictionary")

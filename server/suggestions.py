@@ -25,7 +25,10 @@ _DB_HOST = os.getenv("DB_HOST", "ep-falling-river-aql8vty6.c-8.us-east-1.aws.neo
 _DB_PORT = os.getenv("DB_PORT", "5432")
 _DB_NAME = os.getenv("DB_NAME", "neondb")
 _DB_USER = os.getenv("DB_USER", "neondb_owner")
-_DB_PASSWORD = os.getenv("DB_PASSWORD", "npg_Kprkc1Po3ZHA")
+# No hardcoded fallback — must be supplied via env. If unset, _ensure_conn's
+# psycopg2.connect() below fails and suggestions degrade gracefully (see
+# module docstring), same as any other DB-unreachable case.
+_DB_PASSWORD = os.getenv("DB_PASSWORD")
 _DB_SSLMODE = os.getenv("PGSSLMODE", "require")
 
 _lock = threading.Lock()

@@ -29,6 +29,11 @@ data/processed/
 *.h5
 *.ckpt
 *.tflite
+# ...except the two TFLite models the server actually loads at runtime
+# (sign_session.py / alphabet_session.py) — these must be tracked or
+# deployment has no model to serve.
+!models/psl_words/psl_word_classifier.tflite
+!models/psl/psl_landmark_classifier.tflite
 
 # Logs
 *.log
@@ -36,3 +41,9 @@ data/processed/
 # Others
 *.swp
 *.docx
+
+
+flutter_app/build/
+flutter_app/.dart_tool/
+flutter_app/.packages
+flutter_app/.flutter-plugins
