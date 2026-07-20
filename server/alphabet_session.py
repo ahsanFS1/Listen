@@ -20,6 +20,8 @@ import mediapipe as mp
 import numpy as np
 import tensorflow as tf
 
+from frame_orient import orient_frame
+
 # ── Constants (match psl-v1.py) ────────────────────────────────────────
 THRESHOLD: float = 0.85
 STABLE_REQUIRED: int = 40
@@ -129,6 +131,9 @@ class AlphabetSession:
         bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if bgr is None:
             return self._snapshot(has_hands=False, error="bad_jpeg")
+
+        # Normalise client frame orientation (iOS sends landscape).
+        bgr = orient_frame(bgr)
 
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         rgb.flags.writeable = False

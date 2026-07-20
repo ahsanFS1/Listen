@@ -36,7 +36,11 @@ class SignClient {
   // latency without improving accuracy. _inFlight is incremented when we
   // send and decremented when we get a reply (or after a timeout).
   int _inFlight = 0;
-  static const int _maxInFlight = 2;
+  // Over a hosted (higher-latency) server the buffer fills at the rate frames
+  // actually reach and get processed. Keeping more frames in flight stops the
+  // server sitting idle between round-trips, so the 60-frame window fills
+  // noticeably faster than with the old LAN-tuned value of 2.
+  static const int _maxInFlight = 5;
 
   int _bufferFill = 0;
   int get bufferFill => _bufferFill;

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -238,6 +239,26 @@ class _TranslateScreenState extends State<TranslateScreen> {
   Future<void> _initTts() async {
     try {
       _tts.setErrorHandler((msg) => debugPrint('PSL: tts error: $msg'));
+      // iOS: without an explicit audio session category, AVSpeechSynthesizer
+      // is silenced by the Ring/Silent switch and screen lock — this is why
+      // Speak worked on Android but not iPhone. `playback` keeps speech
+      // audible regardless of the silent switch; mix/duck so it doesn't fight
+      // other audio.
+      if (Platform.isIOS) {
+        try {
+          await _tts.setSharedInstance(true);
+          await _tts.setIosAudioCategory(
+            IosTextToSpeechAudioCategory.playback,
+            [
+              IosTextToSpeechAudioCategoryOptions.defaultToSpeaker,
+              IosTextToSpeechAudioCategoryOptions.mixWithOthers,
+              IosTextToSpeechAudioCategoryOptions.duckOthers,
+            ],
+          );
+        } catch (e) {
+          debugPrint('PSL: ios audio category setup failed: $e');
+        }
+      }
       // Samsung devices default to com.samsung.SMT which has no Urdu/Hindi
       // voice data, so utterances "complete" silently. Force Google TTS
       // (com.google.android.tts) when available — it ships Urdu+Hindi.
@@ -383,7 +404,10 @@ class _TranslateScreenState extends State<TranslateScreen> {
 
     try {
       final rotation = _camera?.description.sensorOrientation ?? 0;
-      final jpeg = await YuvJpeg.encode(image, rotation: rotation, quality: 70);
+      // Lower quality than the LAN default (70): smaller frames upload and
+      // decode faster on the hosted server, filling the buffer quicker. 55 is
+      // still well above where landmark accuracy degrades.
+      final jpeg = await YuvJpeg.encode(image, rotation: rotation, quality: 55);
       if (!mounted || jpeg == null) return;
       _client.sendFrame(jpeg);
     } catch (e) {
