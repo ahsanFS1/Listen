@@ -58,7 +58,7 @@ class _AuthGate extends StatelessWidget {
             ),
           );
         }
-        if (!AuthService.instance.isSignedIn) {
+        if (!AuthService.instance.isSignedIn && !AuthService.instance.isGuest) {
           return const AuthScreen();
         }
         return const MainShell();

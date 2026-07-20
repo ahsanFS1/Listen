@@ -177,6 +177,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   if (_info != null) _buildBanner(_info!, AppColors.ok),
                   const SizedBox(height: 4),
                   _buildSubmit(),
+                  const SizedBox(height: 14),
+                  _buildGuestButton(),
                   const SizedBox(height: 18),
                   Center(
                     child: GestureDetector(
@@ -329,6 +331,27 @@ class _AuthScreenState extends State<AuthScreen> {
         border: Border.all(color: color.withAlpha(120)),
       ),
       child: Text(text, style: TextStyle(color: color, fontSize: 12)),
+    );
+  }
+
+  Widget _buildGuestButton() {
+    return OutlinedButton.icon(
+      onPressed: _busy
+          ? null
+          : () => AuthService.instance.continueAsGuest(),
+      icon: const Icon(Icons.person_outline, size: 18, color: AppColors.accent),
+      label: const Text(
+        'Continue as guest',
+        style: TextStyle(
+            color: AppColors.accent, fontWeight: FontWeight.w700, fontSize: 14),
+      ),
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(vertical: 13),
+        side: const BorderSide(color: AppColors.accent),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
     );
   }
 

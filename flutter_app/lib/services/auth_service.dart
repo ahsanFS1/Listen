@@ -12,11 +12,21 @@ class AuthService extends ChangeNotifier {
 
   SupabaseClient get _sb => Supabase.instance.client;
   User? _user;
+  bool _guest = false;
   bool _initialized = false;
 
   User? get currentUser => _user;
   bool get isSignedIn => _user != null;
+  bool get isGuest => _guest;
   bool get isInitialized => _initialized;
+
+  /// Enter the app without an account. Used because the demo backend has no
+  /// live auth server — lets anyone who installs the app reach the main UI
+  /// with one tap. Real sign-in/up still works if a Supabase project is set.
+  void continueAsGuest() {
+    _guest = true;
+    notifyListeners();
+  }
 
   String get displayName {
     final u = _user;
@@ -65,8 +75,13 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<void> signOut() async {
-    await _sb.auth.signOut();
+    // Swallow errors — with no live auth backend the network call throws,
+    // but the user still expects to be returned to the auth screen.
+    try {
+      await _sb.auth.signOut();
+    } catch (_) {}
     _user = null;
+    _guest = false;
     notifyListeners();
   }
 
