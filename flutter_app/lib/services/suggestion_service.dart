@@ -24,10 +24,15 @@ class SuggestionService {
     final u = Uri.tryParse(ws);
     if (u == null) return null;
     final scheme = (u.scheme == 'wss') ? 'https' : 'http';
+    // Only LAN dev URLs carry an explicit port (e.g. :8000); hosted
+    // deployments (Railway et al.) serve on the scheme's standard port with
+    // no port in the URL, so falling back to 8000 there would silently break
+    // suggestions against any host that isn't a bare LAN IP.
+    final port = u.hasPort ? u.port : (scheme == 'https' ? 443 : 80);
     return Uri(
       scheme: scheme,
       host: u.host,
-      port: u.hasPort ? u.port : 8000,
+      port: port,
       path: path,
     );
   }

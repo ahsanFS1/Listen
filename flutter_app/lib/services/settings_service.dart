@@ -16,9 +16,12 @@ class SettingsService extends ChangeNotifier {
   static const _kServerUrl = 'settings.server_url_v1';
 
   // Build-time default. Overridden at runtime by user-entered URL in profile.
+  // Points at the hosted Railway backend so a fresh install works over the
+  // internet without any LAN setup; override with --dart-define=PSL_WS_URL
+  // for local dev against a Mac on the same Wi-Fi.
   static const String defaultServerUrl = String.fromEnvironment(
     'PSL_WS_URL',
-    defaultValue: 'ws://192.168.1.16:8000/ws/translate',
+    defaultValue: 'wss://listen-psl-backend-production.up.railway.app/ws/translate',
   );
 
   // Sensible defaults — match the previously hardcoded values in
