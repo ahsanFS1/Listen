@@ -110,10 +110,15 @@ public class YuvJpegPlugin: NSObject, FlutterPlugin {
       }
     }
 
-    // NOTE on rotation: if the preview/JPEG comes out sideways or upside
-    // down on-device, swap .right/.left below -- CGImagePropertyOrientation
-    // direction is easy to get backwards without a physical device to test.
-    let ciImage = CIImage(cvPixelBuffer: buffer).oriented(orientationForDegrees(rotation))
+    // iOS delivers the camera buffer in landscape sensor orientation, and
+    // camera_avfoundation reports sensorOrientation as 0 (the Dart-passed
+    // `rotation` is therefore unreliable here). Empirically verified on
+    // device against the captured frame: a 90° CCW rotation (.left) makes
+    // the front- and back-camera buffers upright portrait, matching the
+    // orientation the classifier was trained on. Fix it here rather than
+    // trusting the passed value.
+    _ = rotation
+    let ciImage = CIImage(cvPixelBuffer: buffer).oriented(.left)
     guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else {
       throw EncodeError.cgImageCreationFailed
     }
@@ -130,12 +135,4 @@ public class YuvJpegPlugin: NSObject, FlutterPlugin {
     return outData as Data
   }
 
-  private func orientationForDegrees(_ deg: Int) -> CGImagePropertyOrientation {
-    switch ((deg % 360) + 360) % 360 {
-    case 90: return .right
-    case 180: return .down
-    case 270: return .left
-    default: return .up
-    }
-  }
 }
